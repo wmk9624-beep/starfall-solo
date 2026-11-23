@@ -32,6 +32,7 @@ button {
 .sky {
   position: fixed;
   inset: 0;
+  pointer-events: none;
   background:
     radial-gradient(circle at 20% 10%, rgba(124, 231, 212, 0.12), transparent 32%),
     radial-gradient(circle at 80% 0%, rgba(232, 168, 90, 0.14), transparent 28%),
@@ -74,6 +75,12 @@ button {
   padding: calc(0.75rem + var(--safe-top)) 0.9rem calc(var(--dock-space, 8.5rem) + var(--safe-bot));
   min-height: 100dvh;
   min-width: 0;
+}
+.app.is-game {
+  padding: 0;
+  height: 100dvh;
+  max-height: 100dvh;
+  overflow: hidden;
 }
 
 .boot, .muted { color: var(--muted); }
@@ -349,10 +356,13 @@ input[type="text"] {
 }
 
 @media (max-width: 400px) {
-  .app {
+  .app:not(.is-game) {
     padding-left: 0.7rem;
     padding-right: 0.7rem;
     padding-bottom: calc(var(--dock-space, 12rem) + var(--safe-bot));
+  }
+  .app.is-game {
+    padding: 0;
   }
   .dock { padding-left: 0.7rem; padding-right: 0.7rem; }
   .pills { align-items: flex-start; }
@@ -468,4 +478,121 @@ input[type="text"] {
   min-width: 1.5rem;
   text-align: center;
   font-variant-numeric: tabular-nums;
+}
+
+/* 故事分層：固定 HUD／底導覽，內文獨立捲動，選項至少 44px */
+.game-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  max-height: 100dvh;
+  overflow: hidden;
+  padding: 0 0.9rem;
+  box-sizing: border-box;
+}
+.hud-root {
+  flex: 0 0 auto;
+  position: relative;
+  z-index: 5;
+  background: linear-gradient(rgba(7, 11, 22, 0.96), rgba(7, 11, 22, 0.92));
+  padding-top: var(--safe-top);
+  padding-bottom: 0.35rem;
+}
+.hud-controls { margin: 0.35rem 0 0.2rem; }
+.alert-root { flex: 0 0 auto; position: relative; z-index: 3; }
+.page-root {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-bottom: 0.8rem;
+  -webkit-overflow-scrolling: touch;
+}
+#nav-root, .nav-root {
+  flex: 0 0 auto;
+  width: 100%;
+  z-index: 6;
+  position: relative;
+}
+.bottom-nav {
+  position: relative;
+  left: auto;
+  bottom: auto;
+  transform: none;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  display: flex;
+  gap: 0.35rem;
+  padding: 0.4rem 0 calc(0.45rem + var(--safe-bot));
+  background: rgba(7, 11, 22, 0.96);
+  z-index: 6;
+}
+.nav-btn {
+  flex: 1 1 0;
+  min-height: 44px;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 0.7rem;
+  background: rgba(20, 28, 48, 0.9);
+  color: var(--ink);
+  font: inherit;
+  font-weight: 600;
+}
+.nav-btn.on {
+  border-color: var(--cyan);
+  color: var(--cyan);
+}
+.back-row {
+  display: flex;
+  gap: 0.5rem;
+  margin: 0.2rem 0 0.7rem;
+}
+.back-row .btn { flex: 1 1 0; min-height: 44px; }
+.loc-list { display: flex; flex-direction: column; gap: 0.7rem; }
+.loc-card, .hero-chip {
+  display: block;
+  width: 100%;
+  text-align: left;
+  min-height: 44px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 0.9rem;
+  background: rgba(20, 28, 48, 0.88);
+  color: inherit;
+  font: inherit;
+  padding: 0.8rem 0.9rem;
+}
+.loc-card[disabled] { opacity: 0.6; }
+.hero-strip { display: flex; flex-direction: column; gap: 0.45rem; margin: 0.6rem 0; }
+.story-scene .story-p { margin: 0 0 0.7rem; line-height: 1.6; }
+.story-options { display: flex; flex-direction: column; gap: 0.55rem; margin-top: 0.8rem; }
+.story-option {
+  width: 100%;
+  min-height: 44px;
+  white-space: normal;
+  text-align: left;
+  line-height: 1.35;
+}
+.story-option .cost-note, .cost-note {
+  display: inline-block;
+  margin-left: 0.3rem;
+  color: var(--amber);
+  font-size: 0.86rem;
+}
+.story-option .option-reason, .option-reason {
+  display: block;
+  margin-top: 0.2rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 400;
+}
+.story-option.is-locked { opacity: 0.7; }
+.story-result { margin-top: 0.6rem; }
+.story-result.forced { border-left: 3px solid var(--amber); padding-left: 0.6rem; }
+.raid-dock { margin: 0.8rem 0 1rem; }
+.explore-alert { margin: 0.5rem 0; }
+
+@media (max-width: 400px) {
+  .game-shell { padding-left: 0.7rem; padding-right: 0.7rem; }
+  .page-root { padding-bottom: 0.8rem; }
+  .story-option, .nav-btn, .loc-card, .back-row .btn { min-height: 44px; }
 }
