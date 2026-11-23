@@ -3,10 +3,11 @@
  * 可注入時鐘；前景／暫停由 ForegroundClock 負責，存檔只記遊戲時間。
  */
 (function (root, factory) {
-  if (typeof module === "object" && module.exports) module.exports = factory();
-  else root.StarfallSoloEngine = factory();
-})(typeof globalThis !== "undefined" ? globalThis : this, function () {
+  if (typeof module === "object" && module.exports) module.exports = factory(require("./events.js"));
+  else root.StarfallSoloEngine = factory(root.StarfallSoloEvents);
+})(typeof globalThis !== "undefined" ? globalThis : this, function (Events) {
   "use strict";
+  if (!Events) throw new Error("缺少探索事件表。");
 
   var C = {
     START_RATIONS: 20,
@@ -36,8 +37,24 @@
     AI_ID: "p_ai",
     HUMAN_NAME: "倖存者",
     AI_NAME: "自動前哨",
+    // 以下為擴充草案數值，可調、未稱平衡。
+    EXPLORE_SECONDS: 60,
+    CHOICE_SECONDS: 20,
+    RECOVER_SECONDS: 30,
+    EXPLORE_RATIONS_COST: 1,
+    DUTY_MAX: 1,
+    RECYCLE_UPGRADE_ALLOY_COST: 6,
+    SUPPLY_UPGRADE_ALLOY_COST: 4,
+    WARD_TRAIN_RATIONS_COST: 4,
+    WARD_TRAIN_ALLOY_COST: 1,
+    UNIT_PATROL: "patrol",
+    UNIT_WARD: "ward",
   };
   C.MAX_PRODUCTION_WORKERS = C.ROSTER_SIZE - C.MIN_NOT_IN_PRODUCTION;
+  C.UNIT_POWER = {
+    patrol: { atk: 1, def: 1 },
+    ward: { atk: 0, def: 2 },
+  };
 
   function CommandError(message, code) {
     this.name = "CommandError";
@@ -153,8 +170,21 @@
       supply_built: false,
       armory_built: false,
       training_complete_at: null,
+      training_unit: null,
       recall_complete_at: null,
+      recalling_unit: null,
       protection_until: 0,
+      duty_workers: 0,
+      recycle_upgraded: false,
+      supply_upgraded: false,
+      exploring: 0,
+      explore_complete_at: null,
+      explore_seq: 0,
+      pending_choice: null,
+      recovering: 0,
+      recover_complete_at: null,
+      wards: 0,
+      locked_wards: 0,
     };
   }
 
@@ -173,14 +203,98 @@
   function roster(p) {
     var training = trainingActive(p) ? 1 : 0;
     return (
-      p.standby +
-      p.recycle_workers +
-      p.supply_workers +
+      (p.standby || 0) +
+      (p.recycle_workers || 0) +
+      (p.supply_workers || 0) +
+      (p.duty_workers || 0) +
       training +
-      p.patrols +
-      p.locked_patrols +
-      p.recalling
+      (p.exploring || 0) +
+      (p.recovering || 0) +
+      (p.patrols || 0) +
+      (p.wards || 0) +
+      (p.locked_patrols || 0) +
+      (p.locked_wards || 0) +
+      (p.recalling || 0)
     );
+  }
+
+  function normalizeUnit(unit) {
+    if (unit == null || unit === "" || unit === C.UNIT_PATROL) return C.UNIT_PATROL;
+    if (unit === C.UNIT_WARD) return C.UNIT_WARD;
+    return null;
+  }
+
+  function trainCost(unit) {
+    unit = normalizeUnit(unit) || C.UNIT_PATROL;
+    if (unit === C.UNIT_WARD) {
+      return { unit: unit, rations: C.WARD_TRAIN_RATIONS_COST, alloy: C.WARD_TRAIN_ALLOY_COST, label: "守陣" };
+    }
+    return { unit: C.UNIT_PATROL, rations: C.TRAIN_RATIONS_COST, alloy: C.TRAIN_ALLOY_COST, label: "巡衛" };
+  }
+
+  function unitLabel(unit) {
+    return unit === C.UNIT_WARD ? "守陣" : "巡衛";
+  }
+
+  function emptyComp() {
+    return { patrol: 0, ward: 0 };
+  }
+
+  function normalizeComp(comp) {
+    comp = comp || emptyComp();
+    var patrol = Number(comp.patrol) || 0;
+    var ward = Number(comp.ward) || 0;
+    return { patrol: patrol, ward: ward };
+  }
+
+  function compHeads(comp) {
+    comp = normalizeComp(comp);
+    return comp.patrol + comp.ward;
+  }
+
+  function attackPower(comp) {
+    comp = normalizeComp(comp);
+    return comp.patrol * C.UNIT_POWER.patrol.atk + comp.ward * C.UNIT_POWER.ward.atk;
+  }
+
+  function defensePower(comp) {
+    comp = normalizeComp(comp);
+    return comp.patrol * C.UNIT_POWER.patrol.def + comp.ward * C.UNIT_POWER.ward.def;
+  }
+
+  function isPurePatrolComp(comp) {
+    comp = normalizeComp(comp);
+    return comp.ward === 0;
+  }
+
+  function hasAnyUpgrade(p) {
+    return !!(p.recycle_upgraded || p.supply_upgraded);
+  }
+
+  function cabinPressureHigh(p) {
+    return hasAnyUpgrade(p) && (p.duty_workers || 0) < 1;
+  }
+
+  function upgradeBonusActive(p) {
+    return !cabinPressureHigh(p);
+  }
+
+  function idleOf(p, unit) {
+    return unit === C.UNIT_WARD ? (p.wards || 0) : (p.patrols || 0);
+  }
+
+  function setIdleOf(p, unit, value) {
+    if (unit === C.UNIT_WARD) p.wards = value;
+    else p.patrols = value;
+  }
+
+  function lockedOf(p, unit) {
+    return unit === C.UNIT_WARD ? (p.locked_wards || 0) : (p.locked_patrols || 0);
+  }
+
+  function addLocked(p, unit, delta) {
+    if (unit === C.UNIT_WARD) p.locked_wards = (p.locked_wards || 0) + delta;
+    else p.locked_patrols = (p.locked_patrols || 0) + delta;
   }
 
   function clone(obj) {
@@ -243,16 +357,17 @@
         if (!this.applied_cycles[c]) addTime(this.started_at + c * C.CYCLE_SECONDS);
       }
     }
-    var list = this.playerList();
-    for (var i = 0; i < list.length; i++) {
-      var p = list[i];
-      if (p.training_complete_at != null && leq(p.training_complete_at, now)) {
-        addTime(p.training_complete_at);
-      }
-      if (p.recall_complete_at != null && leq(p.recall_complete_at, now)) {
-        addTime(p.recall_complete_at);
+    function enqueuePlayerTimes(p) {
+      if (p.training_complete_at != null && leq(p.training_complete_at, now)) addTime(p.training_complete_at);
+      if (p.recall_complete_at != null && leq(p.recall_complete_at, now)) addTime(p.recall_complete_at);
+      if (p.explore_complete_at != null && leq(p.explore_complete_at, now)) addTime(p.explore_complete_at);
+      if (p.recover_complete_at != null && leq(p.recover_complete_at, now)) addTime(p.recover_complete_at);
+      if (p.pending_choice && p.pending_choice.deadline_at != null && leq(p.pending_choice.deadline_at, now)) {
+        addTime(p.pending_choice.deadline_at);
       }
     }
+    var list = this.playerList();
+    for (var i = 0; i < list.length; i++) enqueuePlayerTimes(list[i]);
     if (this.battle && !this.battle.resolved && leq(this.battle.resolves_at, now)) {
       addTime(this.battle.resolves_at);
     }
@@ -262,15 +377,23 @@
       if (leq(checkpoint, now)) addTime(checkpoint);
     }
 
-    var ordered = Object.keys(times)
-      .map(function (k) { return times[k]; })
-      .sort(function (a, b) { return a - b; });
-    for (var ti = 0; ti < ordered.length; ti++) {
-      var t = ordered[ti];
-      if (this.phase !== "playing") break;
-      if (t > now + C.EPS) break;
+    var appliedAt = {};
+    var guard = 0;
+    while (this.phase === "playing" && guard < 64) {
+      guard += 1;
+      var ordered = Object.keys(times)
+        .map(function (k) { return times[k]; })
+        .filter(function (t) { return !appliedAt[String(t)] && leq(t, now); })
+        .sort(function (a, b) { return a - b; });
+      if (!ordered.length) break;
+      var t = ordered[0];
+      appliedAt[String(t)] = true;
       this._applyBatch(t);
       this._checkVictory(t);
+      this.playerList().forEach(enqueuePlayerTimes);
+      if (this.battle && !this.battle.resolved && leq(this.battle.resolves_at, now)) {
+        addTime(this.battle.resolves_at);
+      }
     }
   };
 
@@ -285,6 +408,10 @@
         var p = plist[i];
         var alloy = p.recycle_workers * 1;
         var rations = p.supply_built ? p.supply_workers * 2 : 0;
+        if (upgradeBonusActive(p)) {
+          if (p.recycle_upgraded && p.recycle_workers >= 1) alloy += 1;
+          if (p.supply_upgraded && p.supply_built && p.supply_workers >= 1) rations += 1;
+        }
         p.alloy += alloy;
         p.rations += rations;
         if (alloy || rations) {
@@ -297,9 +424,11 @@
     for (j = 0; j < list.length; j++) {
       var tp = list[j];
       if (tp.training_complete_at != null && leq(tp.training_complete_at, t)) {
+        var trained = normalizeUnit(tp.training_unit) || C.UNIT_PATROL;
         tp.training_complete_at = null;
-        tp.patrols += 1;
-        this.log(t, tp.display_name + "完成訓練，多咗 1 名巡衛。", "train");
+        tp.training_unit = null;
+        setIdleOf(tp, trained, idleOf(tp, trained) + 1);
+        this.log(t, tp.display_name + "完成訓練，多咗 1 名" + unitLabel(trained) + "。", "train");
       }
     }
     for (j = 0; j < list.length; j++) {
@@ -309,12 +438,93 @@
         rp.recalling = 0;
         rp.recall_complete_at = null;
         rp.standby += n;
+        rp.recalling_unit = null;
         this.log(t, rp.display_name + "完成遣返，" + n + " 名巡衛退回待命船員。", "recall");
       }
     }
+    this._applyExploreBatch(t);
     if (this.battle && !this.battle.resolved && leq(this.battle.resolves_at, t)) {
       this._resolveBattle(this.battle, t);
     }
+  };
+
+  Match.prototype._applyExploreBatch = function (t) {
+    if (this.phase !== "playing") return;
+    var list = this.playerList();
+    var i;
+    for (i = 0; i < list.length; i++) {
+      var p = list[i];
+      if (p.exploring > 0 && !p.pending_choice && p.explore_complete_at != null && leq(p.explore_complete_at, t)) {
+        var eventId = p._queued_event_id || Events.hashPick(this.started_at, p.player_id, p.explore_seq);
+        p._queued_event_id = null;
+        var ev = Events.eventById(eventId) || Events.eventById("quiet_wreck");
+        p.pending_choice = {
+          event_id: ev.id,
+          arrived_at: t,
+          deadline_at: t + C.CHOICE_SECONDS
+        };
+        this.log(t, p.display_name + "探索到達：「" + ev.title + "」。" + C.CHOICE_SECONDS + " 秒內要揀，逾時自動走穩妥路線。", "explore");
+      }
+    }
+    for (i = 0; i < list.length; i++) {
+      var cp = list[i];
+      if (this.phase !== "playing") return;
+      if (cp.pending_choice && leq(cp.pending_choice.deadline_at, t)) {
+        this._resolveChoice(cp, "A", t, "timeout");
+      }
+    }
+    for (i = 0; i < list.length; i++) {
+      var rp = list[i];
+      if (rp.recovering > 0 && rp.recover_complete_at != null && leq(rp.recover_complete_at, t)) {
+        var n = rp.recovering;
+        rp.recovering = 0;
+        rp.recover_complete_at = null;
+        rp.standby += n;
+        this.log(t, rp.display_name + "探索歸途結束，" + n + " 人返回待命。", "explore");
+      }
+    }
+  };
+
+  Match.prototype._resolveChoice = function (player, option, t, reason) {
+    if (this.phase !== "playing") return { skipped: true };
+    if (!player.pending_choice) throw new CommandError("而家冇待抉擇嘅探索事件。", "no_choice");
+    var ev = Events.eventById(player.pending_choice.event_id);
+    if (!ev) throw new CommandError("探索事件無效。", "bad_request");
+    option = option === "B" ? "B" : "A";
+    if (option === "B" && !Events.canPickB(ev, player)) {
+      throw new CommandError("條件唔夠，唔能選呢條路線。", "no_rations");
+    }
+    if (player.exploring !== 1) throw new CommandError("探索人數異常。", "bad_state");
+
+    player.pending_choice = null;
+    player.exploring = 0;
+    player.explore_complete_at = null;
+    var recover = false;
+    if (ev.id === "quiet_wreck") {
+      if (option === "A") player.alloy += 2;
+      else { player.alloy += 4; recover = true; }
+    } else if (ev.id === "dry_crate") {
+      if (option === "A") player.rations += 3;
+      else { player.rations += 6; recover = true; }
+    } else if (ev.id === "edge_scrap") {
+      if (option === "A") player.alloy += 1;
+      else { player.alloy += 3; recover = true; }
+    } else if (ev.id === "signal_noise") {
+      if (option === "B") {
+        player.alloy += 2;
+        player.rations -= 2;
+      }
+    }
+    if (recover) {
+      player.recovering = 1;
+      player.recover_complete_at = t + C.RECOVER_SECONDS;
+    } else {
+      player.standby += 1;
+    }
+    var how = reason === "timeout" ? "逾時採用穩妥路線。" : ("選擇咗" + (option === "B" ? "冒險" : "穩妥") + "路線。");
+    var opt = option === "B" ? ev.optionB : ev.optionA;
+    this.log(t, player.display_name + how + opt.detail + (recover ? "" : ""), "explore");
+    return { option: option, event_id: ev.id, recover: recover };
   };
 
   Match.prototype._loot = function (survivors, defender) {
@@ -333,13 +543,19 @@
     var atk = this.players[battle.attacker_id];
     var dfn = this.players[battle.defender_id];
 
+    var atkComp = normalizeComp(battle.attack_comp || { patrol: A, ward: 0 });
+    var dfnComp = normalizeComp(battle.defense_comp || { patrol: D, ward: 0 });
+    var pure = isPurePatrolComp(atkComp) && isPurePatrolComp(dfnComp);
+    var atkScore = pure ? A : attackPower(atkComp);
+    var dfnScore = pure ? D : defensePower(dfnComp);
+
     var outcome, atkCas, dfnCas, loot;
-    if (A > D) {
+    if (atkScore > dfnScore) {
       outcome = "attack_win";
       atkCas = Math.floor(Math.min(A, D) / 2);
       dfnCas = Math.min(A, D);
       loot = this._loot(A - atkCas, dfn);
-    } else if (A < D) {
+    } else if (atkScore < dfnScore) {
       outcome = "defense_win";
       atkCas = Math.min(A, D);
       dfnCas = Math.floor(Math.min(A, D) / 2);
@@ -351,18 +567,33 @@
       loot = { alloy: 0, rations: 0 };
     }
 
-    if (atk.locked_patrols < A || dfn.locked_patrols < D) {
-      atkCas = Math.min(atkCas, atk.locked_patrols);
-      dfnCas = Math.min(dfnCas, dfn.locked_patrols);
+    var atkLocked = (atk.locked_patrols || 0) + (atk.locked_wards || 0);
+    var dfnLocked = (dfn.locked_patrols || 0) + (dfn.locked_wards || 0);
+    if (atkLocked < A || dfnLocked < D) {
+      atkCas = Math.min(atkCas, atkLocked);
+      dfnCas = Math.min(dfnCas, dfnLocked);
     }
 
-    atk.locked_patrols -= A;
-    atk.patrols += A - atkCas;
-    atk.standby += atkCas;
-
-    dfn.locked_patrols -= D;
-    dfn.patrols += D - dfnCas;
-    dfn.standby += dfnCas;
+    // 攻方傷亡先巡衛後守陣；守方先守陣後巡衛。純巡衛時等同舊帳。
+    function applyCasualties(side, comp, cas, order) {
+      var left = cas;
+      var i, typ, take;
+      for (i = 0; i < order.length; i++) {
+        typ = order[i];
+        take = Math.min(left, typ === "ward" ? comp.ward : comp.patrol);
+        if (typ === "ward") {
+          side.locked_wards = (side.locked_wards || 0) - comp.ward;
+          side.wards = (side.wards || 0) + (comp.ward - take);
+        } else {
+          side.locked_patrols = (side.locked_patrols || 0) - comp.patrol;
+          side.patrols = (side.patrols || 0) + (comp.patrol - take);
+        }
+        left -= take;
+      }
+      side.standby += cas;
+    }
+    applyCasualties(atk, atkComp, atkCas, ["patrol", "ward"]);
+    applyCasualties(dfn, dfnComp, dfnCas, ["ward", "patrol"]);
 
     dfn.alloy -= loot.alloy;
     dfn.rations -= loot.rations;
@@ -464,9 +695,12 @@
     var result;
     if (typ === "assign") result = this._cmdAssign(player, payload, now);
     else if (typ === "build") result = this._cmdBuild(player, payload, now);
-    else if (typ === "train") result = this._cmdTrain(player, now);
+    else if (typ === "upgrade") result = this._cmdUpgrade(player, payload, now);
+    else if (typ === "train") result = this._cmdTrain(player, payload, now);
     else if (typ === "recall") result = this._cmdRecall(player, payload, now);
     else if (typ === "raid") result = this._cmdRaid(player, payload, now);
+    else if (typ === "explore") result = this._cmdExplore(player, payload, now);
+    else if (typ === "choose") result = this._cmdChoose(player, payload, now);
     else throw new CommandError("唔識呢種指令。", "bad_request");
 
     var wrapped = Object.assign({ ok: true, command_id: commandId }, result);
@@ -479,6 +713,17 @@
     var facility = String((payload && payload.facility) || "");
     var count = Number(payload && payload.count);
     if (!Number.isInteger(count)) throw new CommandError("派工人數無效。", "bad_request");
+    if (facility === "duty") {
+      if (count < 0 || count > C.DUTY_MAX) throw new CommandError("值守最多 1 人。", "limit");
+      var dutyDelta = count - (player.duty_workers || 0);
+      if (dutyDelta > 0 && player.standby < dutyDelta) {
+        throw new CommandError("待命船員唔夠派。", "no_crew");
+      }
+      player.standby -= dutyDelta;
+      player.duty_workers = count;
+      this.log(now, player.display_name + "將指揮艙值守設為 " + count + " 人。", "assign");
+      return { assigned: { facility: "duty", count: count } };
+    }
     if (count < 0 || count > C.MAX_WORKERS_PER_FACILITY) {
       throw new CommandError("每個產出設施最多派 2 人。", "limit");
     }
@@ -541,35 +786,73 @@
     throw new CommandError("呢座設施唔能建造。", "bad_request");
   };
 
-  Match.prototype._cmdTrain = function (player, now) {
+  Match.prototype._cmdUpgrade = function (player, payload, now) {
+    var facility = String((payload && payload.facility) || "");
+    if (facility === "recycle") {
+      if (player.recycle_upgraded) throw new CommandError("回收廠已經升級，不可拆除或退款。", "already_built");
+      if (player.alloy < C.RECYCLE_UPGRADE_ALLOY_COST) {
+        throw new CommandError("合金不足，深拆裝置要 " + C.RECYCLE_UPGRADE_ALLOY_COST + "。", "no_alloy");
+      }
+      player.alloy -= C.RECYCLE_UPGRADE_ALLOY_COST;
+      player.recycle_upgraded = true;
+      this.log(now, player.display_name + "升級回收廠「深拆裝置」，花費合金 " + C.RECYCLE_UPGRADE_ALLOY_COST + "。艙壓過高時只暫停加成。", "upgrade");
+      return { upgraded: "recycle" };
+    }
+    if (facility === "supply") {
+      if (!player.supply_built) throw new CommandError("補給棚未建成，唔能升級。", "not_built");
+      if (player.supply_upgraded) throw new CommandError("補給棚已經升級，不可拆除或退款。", "already_built");
+      if (player.alloy < C.SUPPLY_UPGRADE_ALLOY_COST) {
+        throw new CommandError("合金不足，密植槽要 " + C.SUPPLY_UPGRADE_ALLOY_COST + "。", "no_alloy");
+      }
+      player.alloy -= C.SUPPLY_UPGRADE_ALLOY_COST;
+      player.supply_upgraded = true;
+      this.log(now, player.display_name + "升級補給棚「密植槽」，花費合金 " + C.SUPPLY_UPGRADE_ALLOY_COST + "。艙壓過高時只暫停加成。", "upgrade");
+      return { upgraded: "supply" };
+    }
+    throw new CommandError("呢座設施唔能升級。", "bad_request");
+  };
+
+  Match.prototype._cmdTrain = function (player, payload, now) {
+    var unit = normalizeUnit(payload && payload.unit);
+    if (!unit) throw new CommandError("唔識呢種兵種。", "bad_request");
+    var cost = trainCost(unit);
     if (!player.armory_built) throw new CommandError("未建造整備艙，唔能練兵。", "not_built");
     if (trainingActive(player)) {
       throw new CommandError("整備艙隊列最多 1 個，而家已經有訓練進行中。", "busy");
     }
-    if (player.rations < C.TRAIN_RATIONS_COST) {
-      throw new CommandError("口糧不足（要 3），要搶到或產到口糧先可以再開新訓練。", "no_rations");
+    if (player.rations < cost.rations) {
+      if (unit === C.UNIT_PATROL) {
+        throw new CommandError("口糧不足（要 3），要搶到或產到口糧先可以再開新訓練。", "no_rations");
+      }
+      throw new CommandError("口糧不足，練守陣要 " + cost.rations + "。", "no_rations");
     }
-    if (player.alloy < C.TRAIN_ALLOY_COST) {
-      throw new CommandError("合金不足，練兵要合金 2。", "no_alloy");
+    if (player.alloy < cost.alloy) {
+      if (unit === C.UNIT_PATROL) {
+        throw new CommandError("合金不足，練兵要合金 2。", "no_alloy");
+      }
+      throw new CommandError("合金不足，練守陣要合金 " + cost.alloy + "。", "no_alloy");
     }
     if (player.standby < 1) throw new CommandError("冇待命船員可以送去訓練。", "no_crew");
-    player.rations -= C.TRAIN_RATIONS_COST;
-    player.alloy -= C.TRAIN_ALLOY_COST;
+    player.rations -= cost.rations;
+    player.alloy -= cost.alloy;
     player.standby -= 1;
+    player.training_unit = unit;
     player.training_complete_at = now + C.TRAIN_SECONDS;
     this.log(
       now,
       player.display_name +
-        "開始練兵，消耗口糧 " +
-        C.TRAIN_RATIONS_COST +
+        "開始訓練" +
+        cost.label +
+        "，消耗口糧 " +
+        cost.rations +
         "、合金 " +
-        C.TRAIN_ALLOY_COST +
+        cost.alloy +
         "，" +
         String(C.TRAIN_SECONDS) +
         " 秒後完成。",
       "train"
     );
-    return { training_complete_at: player.training_complete_at };
+    return { training_complete_at: player.training_complete_at, unit: unit };
   };
 
   Match.prototype._cmdRecall = function (player, payload, now) {
@@ -578,32 +861,55 @@
     if (count < 1) throw new CommandError("至少要遣返 1 名未被鎖定嘅巡衛。", "bad_request");
     if (!player.armory_built) throw new CommandError("未建造整備艙，唔能遣返。", "not_built");
     if (recallActive(player)) throw new CommandError("而家已有遣返進行中。", "busy");
-    if (player.patrols < count) {
-      throw new CommandError("可遣返嘅巡衛唔夠。被鎖定嘅巡衛不可遣返。", "locked_or_short");
+    var unit = normalizeUnit((payload && payload.unit) || C.UNIT_PATROL);
+    if (!unit) throw new CommandError("唔識呢種兵種。", "bad_request");
+    if (idleOf(player, unit) < count) {
+      throw new CommandError("可遣返嘅" + unitLabel(unit) + "唔夠。被鎖定嘅兵力不可遣返。", "locked_or_short");
     }
-    player.patrols -= count;
+    setIdleOf(player, unit, idleOf(player, unit) - count);
     player.recalling = count;
+    player.recalling_unit = unit;
     player.recall_complete_at = now + C.RECALL_SECONDS;
     this.log(
       now,
       player.display_name +
         "開始遣返 " +
         count +
-        " 名巡衛，" +
+        " 名" +
+        unitLabel(unit) +
+        "，" +
         String(C.RECALL_SECONDS) +
         " 秒後退回船員，不退回口糧或合金。",
       "recall"
     );
-    return { recall_complete_at: player.recall_complete_at, count: count };
+    return { recall_complete_at: player.recall_complete_at, count: count, unit: unit };
   };
 
-  Match.prototype._cmdRaid = function (player, payload, now) {
+  Match.prototype._parseRaidComp = function (player, payload) {
+    if (payload && payload.comp && typeof payload.comp === "object") {
+      var patrol = Number(payload.comp.patrol) || 0;
+      var ward = Number(payload.comp.ward) || 0;
+      if (!Number.isInteger(patrol) || !Number.isInteger(ward) || patrol < 0 || ward < 0) {
+        throw new CommandError("出征構成無效。", "bad_request");
+      }
+      return { patrol: patrol, ward: ward };
+    }
     var count = Number(payload && payload.count);
     if (!Number.isInteger(count)) throw new CommandError("出征人數無效。", "bad_request");
     if (count < 1) throw new CommandError("出征至少要 1 名巡衛。", "need_one");
+    return { patrol: count, ward: 0 };
+  };
+
+  Match.prototype._cmdRaid = function (player, payload, now) {
+    var atkComp = this._parseRaidComp(player, payload);
+    var A = compHeads(atkComp);
+    if (A < 1) throw new CommandError("出征至少要 1 名巡衛。", "need_one");
+    if (attackPower(atkComp) < 1) {
+      throw new CommandError("無攻勢唔能出征。守陣唔可以獨自或組成無攻勢隊伍去偷空城。", "no_attack");
+    }
     var opp = this.opponent(player.player_id);
     if (!opp) throw new CommandError("仲未有對手。", "waiting");
-    // 單機明確移除「對手在線」限制：電腦對手永遠在場，背景改為暫停計時。
+    // 單機明確移除「對手在線」限制：電腦對手永遠在場。
     if (this.battle && !this.battle.resolved) {
       throw new CommandError("同一對玩家同時最多一場未結算戰鬥。", "battle_pending");
     }
@@ -611,21 +917,30 @@
       var remain = Math.max(0, Math.round(opp.protection_until - now));
       throw new CommandError("對方受襲保護仲有 " + remain + " 秒，唔能再開戰。", "protected");
     }
-    if (player.patrols < count) {
+    if (player.patrols < atkComp.patrol) {
       throw new CommandError("可出征巡衛唔夠。被鎖定或遣返中嘅巡衛不可再出征。", "locked_or_short");
     }
-    var A = count;
-    var D = opp.patrols;
-    player.patrols -= A;
-    player.locked_patrols += A;
-    opp.patrols -= D;
-    opp.locked_patrols += D;
+    if ((player.wards || 0) < atkComp.ward) {
+      throw new CommandError("可出征守陣唔夠。被鎖定或遣返中嘅守陣不可再出征。", "locked_or_short");
+    }
+    var dfnComp = { patrol: opp.patrols || 0, ward: opp.wards || 0 };
+    var D = compHeads(dfnComp);
+    player.patrols -= atkComp.patrol;
+    player.locked_patrols += atkComp.patrol;
+    player.wards = (player.wards || 0) - atkComp.ward;
+    player.locked_wards = (player.locked_wards || 0) + atkComp.ward;
+    opp.patrols -= dfnComp.patrol;
+    opp.locked_patrols += dfnComp.patrol;
+    opp.wards = (opp.wards || 0) - dfnComp.ward;
+    opp.locked_wards = (opp.locked_wards || 0) + dfnComp.ward;
     var battle = {
       battle_id: newId("b_"),
       attacker_id: player.player_id,
       defender_id: opp.player_id,
       attack_force: A,
       defense_force: D,
+      attack_comp: atkComp,
+      defense_comp: dfnComp,
       started_at: now,
       resolves_at: now + C.BATTLE_SECONDS,
       resolved: false,
@@ -654,6 +969,57 @@
     };
   };
 
+  Match.prototype._cmdExplore = function (player, payload, now) {
+    var reason = this.exploreBlockReason(player, now);
+    if (reason) throw new CommandError(reason, "explore_blocked");
+    if (player.rations < C.EXPLORE_RATIONS_COST) {
+      throw new CommandError("口糧不足，出發要 " + C.EXPLORE_RATIONS_COST + "。", "no_rations");
+    }
+    if (player.standby < 1) throw new CommandError("冇待命船員可以外出探索。", "no_crew");
+    player.rations -= C.EXPLORE_RATIONS_COST;
+    player.standby -= 1;
+    player.exploring = 1;
+    player.explore_seq = (player.explore_seq || 0) + 1;
+    player.explore_complete_at = now + C.EXPLORE_SECONDS;
+    var forced = payload && payload.event_id;
+    if (forced) {
+      if (!Events.eventById(forced)) throw new CommandError("探索事件無效。", "bad_request");
+      player._queued_event_id = forced;
+    } else {
+      player._queued_event_id = Events.hashPick(this.started_at, player.player_id, player.explore_seq);
+    }
+    this.log(
+      now,
+      player.display_name +
+        "派出 1 名船員探索，消耗口糧 " +
+        C.EXPLORE_RATIONS_COST +
+        "，" +
+        String(C.EXPLORE_SECONDS) +
+        " 秒後到達。",
+      "explore"
+    );
+    return { explore_complete_at: player.explore_complete_at, explore_seq: player.explore_seq };
+  };
+
+  Match.prototype._cmdChoose = function (player, payload, now) {
+    if (this.phase !== "playing") throw new CommandError("對局已經結束，唔能再選擇。", "finished");
+    if (!player.pending_choice) throw new CommandError("而家冇待抉擇嘅探索事件。", "no_choice");
+    var option = payload && payload.option;
+    if (option !== "A" && option !== "B") throw new CommandError("請選擇 A 或 B。", "bad_request");
+    return this._resolveChoice(player, option, now, "chosen");
+  };
+
+  Match.prototype.exploreBlockReason = function (player, now) {
+    if (this.phase === "waiting") return "對局未開始。";
+    if (this.phase === "finished") return "對局已經結束。";
+    if ((player.exploring || 0) > 0) return "已經有人外出探索。";
+    if (player.pending_choice) return "先要處理到達嘅探索抉擇。";
+    if ((player.recovering || 0) > 0) return "還有人喺歸途休養，唔能再出發。";
+    if (player.standby < 1) return "冇待命船員可以外出探索。";
+    if (player.rations < C.EXPLORE_RATIONS_COST) return "口糧不足，出發要 " + C.EXPLORE_RATIONS_COST + "。";
+    return null;
+  };
+
   Match.prototype.raidBlockReason = function (player, now) {
     if (this.phase === "waiting") return "對局未開始。";
     if (this.phase === "finished") return "對局已經結束。";
@@ -664,7 +1030,10 @@
       var remain = Math.max(0, Math.round(opp.protection_until - now));
       return "對方受襲保護仲有 " + remain + " 秒。";
     }
-    if (player.patrols < 1) return "至少要有 1 名可出征巡衛。";
+    if (player.patrols < 1) {
+      if ((player.wards || 0) > 0) return "無攻勢唔能出征。守陣唔可以獨自去偷空城。";
+      return "至少要有 1 名可出征巡衛。";
+    }
     return null;
   };
 
@@ -681,16 +1050,35 @@
       patrols: p.patrols,
       locked_patrols: p.locked_patrols,
       recalling: p.recalling,
+      recalling_unit: p.recalling_unit || null,
       recycle_workers: p.recycle_workers,
       supply_workers: p.supply_workers,
+      duty_workers: p.duty_workers || 0,
       supply_built: p.supply_built,
       armory_built: p.armory_built,
+      recycle_upgraded: !!p.recycle_upgraded,
+      supply_upgraded: !!p.supply_upgraded,
       command_built: true,
       training: trainingActive(p),
+      training_unit: p.training_unit || null,
       training_remaining: trainLeft,
       recalling_active: recallActive(p),
       recall_remaining: recallLeft,
       protection_remaining: prot,
+      wards: p.wards || 0,
+      locked_wards: p.locked_wards || 0,
+      exploring: p.exploring || 0,
+      explore_complete_at: p.explore_complete_at,
+      explore_remaining: p.exploring && p.explore_complete_at != null && !p.pending_choice ? Math.max(0, p.explore_complete_at - now) : null,
+      pending_choice: p.pending_choice ? Object.assign({}, p.pending_choice, {
+        remain: Math.max(0, p.pending_choice.deadline_at - now),
+        event: Events.eventById(p.pending_choice.event_id) || null,
+        can_pick_b: Events.canPickB(Events.eventById(p.pending_choice.event_id), p)
+      }) : null,
+      recovering: p.recovering || 0,
+      recover_remaining: p.recovering && p.recover_complete_at != null ? Math.max(0, p.recover_complete_at - now) : null,
+      pressure_high: cabinPressureHigh(p),
+      bonus_active: upgradeBonusActive(p) && hasAnyUpgrade(p),
       roster: roster(p),
     };
   };
@@ -733,9 +1121,12 @@
         resolution: source.resolution,
         you_attack: source.attacker_id === viewerId,
         remaining: !source.resolved ? Math.max(0, source.resolves_at - now) : 0,
+        attack_comp: source.attack_comp ? normalizeComp(source.attack_comp) : null,
+        defense_comp: source.defense_comp ? normalizeComp(source.defense_comp) : null,
       };
     }
     var reason = this.raidBlockReason(viewer, now);
+    var exploreReason = this.exploreBlockReason(viewer, now);
     return {
       mode: "solo",
       phase: this.phase,
@@ -749,6 +1140,7 @@
       result: result,
       events: this.events.slice(),
       raid: { can: reason == null, reason: reason, max: viewer.patrols },
+      explore: { can: exploreReason == null, reason: exploreReason },
       paused: !!(this.clock && this.clock.paused),
     };
   };
@@ -758,6 +1150,7 @@
     return {
       version: 1,
       kind: "starfall-solo",
+      expansion_schema: 1,
       clock: this.clock.now(),
       paused: extra.paused != null ? !!extra.paused : !!(this.clock && this.clock.paused),
       match: {
@@ -809,13 +1202,91 @@
       var p = players[i];
       if (p.rations < 0 || p.alloy < 0) return false;
       if (p.standby < 0 || p.patrols < 0 || p.locked_patrols < 0 || p.recalling < 0) return false;
+      if ((p.wards || 0) < 0 || (p.locked_wards || 0) < 0) return false;
       if (p.recycle_workers < 0 || p.supply_workers < 0) return false;
+      if ((p.duty_workers || 0) < 0 || (p.exploring || 0) < 0 || (p.recovering || 0) < 0) return false;
+      if ((p.duty_workers || 0) > C.DUTY_MAX) return false;
+      if ((p.exploring || 0) > 1 || (p.recovering || 0) > 1) return false;
+      if ((p.exploring || 0) > 0 && (p.recovering || 0) > 0) return false;
       if (p.recycle_workers > C.MAX_WORKERS_PER_FACILITY) return false;
       if (p.supply_workers > C.MAX_WORKERS_PER_FACILITY) return false;
       if (productionWorkers(p) > C.MAX_PRODUCTION_WORKERS) return false;
       if (roster(p) !== C.ROSTER_SIZE) return false;
     }
     return true;
+  }
+
+  var EXPANSION_DEFAULTS = {
+    duty_workers: 0,
+    recycle_upgraded: false,
+    supply_upgraded: false,
+    exploring: 0,
+    explore_complete_at: null,
+    explore_seq: 0,
+    pending_choice: null,
+    recovering: 0,
+    recover_complete_at: null,
+    wards: 0,
+    locked_wards: 0,
+    training_unit: null,
+    recalling_unit: null,
+  };
+
+  function isMissing(v) {
+    return v === undefined;
+  }
+
+  function assertPresentExpansionField(p, key, legacy) {
+    if (legacy && isMissing(p[key])) return;
+    if (isMissing(p[key])) throw new Error("新存檔缺欄：" + key);
+  }
+
+  function expandMigrate(data) {
+    if (!data || typeof data !== "object") return data;
+    var legacy = !Object.prototype.hasOwnProperty.call(data, "expansion_schema");
+    if (!legacy && data.expansion_schema !== 1) {
+      throw new Error("存檔擴充版本不支援。");
+    }
+    var out = Object.assign({}, data);
+    if (!out.match || typeof out.match !== "object") return out;
+    out.match = Object.assign({}, out.match);
+    if (out.match.players) {
+      out.match.players = Object.assign({}, out.match.players);
+      Object.keys(out.match.players).forEach(function (id) {
+        var src = out.match.players[id];
+        if (!src || typeof src !== "object") return;
+        var p = Object.assign({}, src);
+        if (legacy) {
+          if (isMissing(p.duty_workers)) p.duty_workers = 0;
+          if (isMissing(p.recycle_upgraded)) p.recycle_upgraded = false;
+          if (isMissing(p.supply_upgraded)) p.supply_upgraded = false;
+          if (isMissing(p.exploring)) p.exploring = 0;
+          if (isMissing(p.explore_complete_at)) p.explore_complete_at = null;
+          if (isMissing(p.explore_seq)) p.explore_seq = 0;
+          if (isMissing(p.pending_choice)) p.pending_choice = null;
+          if (isMissing(p.recovering)) p.recovering = 0;
+          if (isMissing(p.recover_complete_at)) p.recover_complete_at = null;
+          if (isMissing(p.wards)) p.wards = 0;
+          if (isMissing(p.locked_wards)) p.locked_wards = 0;
+          if (isMissing(p.training_unit)) p.training_unit = p.training_complete_at != null ? C.UNIT_PATROL : null;
+          if (isMissing(p.recalling_unit)) p.recalling_unit = p.recalling > 0 ? C.UNIT_PATROL : null;
+        }
+        out.match.players[id] = p;
+      });
+    }
+    function fillBattle(b) {
+      if (!b || typeof b !== "object") return b;
+      var c = Object.assign({}, b);
+      if (legacy) {
+        if (!c.attack_comp) c.attack_comp = { patrol: c.attack_force || 0, ward: 0 };
+        if (!c.defense_comp) c.defense_comp = { patrol: c.defense_force || 0, ward: 0 };
+      }
+      return c;
+    }
+    if (out.match.battle) out.match.battle = fillBattle(out.match.battle);
+    if (out.match.last_battle) out.match.last_battle = fillBattle(out.match.last_battle);
+    if (legacy) out.expansion_schema = 1;
+    return out;
   }
 
   return {
@@ -831,5 +1302,13 @@
     isProductionCycle: isProductionCycle,
     near: near,
     leq: leq,
+    expandMigrate: expandMigrate,
+    trainCost: trainCost,
+    attackPower: attackPower,
+    defensePower: defensePower,
+    cabinPressureHigh: cabinPressureHigh,
+    upgradeBonusActive: upgradeBonusActive,
+    Events: Events,
+    EXPANSION_DEFAULTS: EXPANSION_DEFAULTS,
   };
 });

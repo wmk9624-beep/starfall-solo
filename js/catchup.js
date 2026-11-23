@@ -97,12 +97,18 @@
       var p = list[i];
       addTime(times, p.training_complete_at, now, cap);
       addTime(times, p.recall_complete_at, now, cap);
+      addTime(times, p.explore_complete_at, now, cap);
+      addTime(times, p.recover_complete_at, now, cap);
+      if (p.pending_choice && p.pending_choice.deadline_at != null) {
+        addTime(times, p.pending_choice.deadline_at, now, cap);
+      }
       if (p.protection_until > now) addTime(times, p.protection_until, now, cap);
     }
     if (match.battle && !match.battle.resolved) {
       addTime(times, match.battle.resolves_at, now, cap);
     }
     if (ai && ai._lastRaidAt != null) addTime(times, ai._lastRaidAt + 90, now, cap);
+    if (ai && ai._lastExploreAt != null) addTime(times, ai._lastExploreAt + 90, now, cap);
     times.sort(function (a, b) { return a - b; });
     if (!times.length) return cap;
     return times[0];

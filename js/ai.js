@@ -15,6 +15,7 @@
     this.playerId = opts.playerId || C.AI_ID;
     this._seq = 0;
     this._lastRaidAt = null;
+    this._lastExploreAt = null;
   }
 
   SoloAI.prototype._cid = function () {
@@ -75,15 +76,60 @@
       }
     }
 
+    if (me.pending_choice) {
+      did(this, "choose", { option: "A" });
+      me = match.players[this.playerId];
+    }
+
+    if (
+      me.armory_built &&
+      !me.recycle_upgraded &&
+      me.alloy >= C.RECYCLE_UPGRADE_ALLOY_COST + C.TRAIN_ALLOY_COST &&
+      ((me.duty_workers || 0) >= 1 || me.standby >= 1)
+    ) {
+      did(this, "upgrade", { facility: "recycle" });
+      me = match.players[this.playerId];
+    }
+    if (
+      me.armory_built &&
+      me.supply_built &&
+      !me.supply_upgraded &&
+      me.alloy >= C.SUPPLY_UPGRADE_ALLOY_COST + C.TRAIN_ALLOY_COST &&
+      ((me.duty_workers || 0) >= 1 || me.standby >= 1)
+    ) {
+      did(this, "upgrade", { facility: "supply" });
+      me = match.players[this.playerId];
+    }
+    if ((me.recycle_upgraded || me.supply_upgraded) && (me.duty_workers || 0) < 1 && me.standby >= 1) {
+      did(this, "assign", { facility: "duty", count: 1 });
+      me = match.players[this.playerId];
+    }
+
     if (
       me.armory_built &&
       !me.training_complete_at &&
-      me.standby >= 1 &&
-      me.rations >= C.TRAIN_RATIONS_COST &&
-      me.alloy >= C.TRAIN_ALLOY_COST
+      me.standby >= 1
     ) {
-      did(this, "train");
-      me = match.players[this.playerId];
+      var wantWard = me.patrols >= 2 && (me.wards || 0) < 1 &&
+        me.rations >= C.WARD_TRAIN_RATIONS_COST && me.alloy >= C.WARD_TRAIN_ALLOY_COST;
+      if (wantWard) {
+        did(this, "train", { unit: "ward" });
+        me = match.players[this.playerId];
+      } else if (me.rations >= C.TRAIN_RATIONS_COST && me.alloy >= C.TRAIN_ALLOY_COST) {
+        did(this, "train");
+        me = match.players[this.playerId];
+      }
+    }
+
+    var exReason = match.exploreBlockReason(me, now);
+    var sinceExplore = this._lastExploreAt == null ? Infinity : now - this._lastExploreAt;
+    if (exReason == null && elapsed >= 180 && sinceExplore >= 90 && me.alloy < C.VICTORY_ALLOY) {
+      var oppE = match.opponent(this.playerId);
+      if (oppE && me.alloy <= oppE.alloy) {
+        var ex = did(this, "explore");
+        if (ex.ok) this._lastExploreAt = now;
+        me = match.players[this.playerId];
+      }
     }
 
     var reason = match.raidBlockReason(me, now);
@@ -107,13 +153,14 @@
   };
 
   SoloAI.prototype.toJSON = function () {
-    return { seq: this._seq, lastRaidAt: this._lastRaidAt };
+    return { seq: this._seq, lastRaidAt: this._lastRaidAt, lastExploreAt: this._lastExploreAt };
   };
 
   SoloAI.prototype.restore = function (data) {
     if (!data) return this;
     if (typeof data.seq === "number") this._seq = data.seq;
     this._lastRaidAt = data.lastRaidAt != null ? data.lastRaidAt : null;
+    this._lastExploreAt = data.lastExploreAt != null ? data.lastExploreAt : null;
     return this;
   };
 

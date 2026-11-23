@@ -228,7 +228,7 @@
         </div>
       </header>
       <section class="card">
-        <p class="lobby-copy">保留建造、採集、練兵同掠奪。對手係固定規則嘅自動前哨，遵守同你一樣嘅人口、資源、隊列、鎖兵、保護同生產，唔會暗送資源。離開時對局繼續，返回後補算，可能戰敗。瀏覽器背景唔保證真係執行，只喺你返嚟或重新載入時按經過時長追補，最長到 15 分鐘終局。只有按「暫停」先會真的停，暫停期間離開唔會補算。存檔只寫呢個瀏覽器。</p>
+        <p class="lobby-copy">保留建造、採集、練兵同掠奪。亦可升級產能並留人值守、派船員探索兩選事件、訓練巡衛或守陣。對手係固定規則嘅自動前哨，同一套指令同成本，唔會暗送資源。離開時對局繼續，返回後補算，可能戰敗；探索逾時會自動走穩妥路線。只有按「暫停」先會真的停。存檔只寫呢個瀏覽器。</p>
         <p class="save-note">呢個係本機靜態原型，無需登入。兩個實體手機未必可以打開 127.0.0.1。重新開始要確認。舊存檔若未帶牆鐘錨點，會按已暫停處理，避免突然補算。</p>
         ${errorBlock()}
         ${corruptBox}
@@ -260,12 +260,14 @@
 
   function workerBtns(facility, you, state) {
     if (facility === "supply" && (!you || !you.supply_built)) return "";
-    const current = facility === "recycle" ? you.recycle_workers : you.supply_workers;
-    const others = facility === "recycle" ? you.supply_workers : you.recycle_workers;
+    if (facility === "duty" && !you) return "";
+    const current = facility === "duty" ? (you.duty_workers || 0) : (facility === "recycle" ? you.recycle_workers : you.supply_workers);
+    const others = facility === "duty" ? 0 : (facility === "recycle" ? you.supply_workers : you.recycle_workers);
     const ctrl = UiSync.assignControlState({
       current: current,
       standby: you.standby,
       productionOthers: others,
+      maxPer: facility === "duty" ? 1 : 2,
       paused: assignFlags(state).paused,
       finished: assignFlags(state).finished,
       built: true
@@ -322,15 +324,59 @@
     const prot = you.protection_remaining > 0 ? `你受襲保護仲有 ${fmtTime(you.protection_remaining)}` : "";
     const oppProt = opp && opp.protection_remaining > 0 ? `對方受襲保護 ${fmtTime(opp.protection_remaining)}` : "";
 
-    const commandBody = `<p class="desc">開局已有，不可拆。固定保護底線：口糧 6、合金 6，打輸都搶唔走。</p>${prot ? `<p class="tag">${prot}</p>` : ""}`;
-    const recycleBody = workerBtns("recycle", you, state) + `<p class="desc">開局已有。每人每 30 秒產合金 1。</p>`;
+    const pressureTxt = you.pressure_high
+      ? "艙壓：過高（升級加成暫停，派人值守可恢復）"
+      : (you.recycle_upgraded || you.supply_upgraded ? "艙壓：穩定" : "艙壓：穩定（未升級時無需值守）");
+    const exploreReason = (state.explore && state.explore.reason) || "";
+    const exploreBtnDisabled = (state.phase !== "playing") || paused || !state.explore || !state.explore.can;
+    let exploreBlock = "";
+    if (you.pending_choice) {
+      const ev = you.pending_choice.event || {};
+      exploreBlock = `<div class="choice-entry">
+        <p class="assign-status">探索已到達：「${escapeHtml(ev.title || "事件")}」。尚餘 ${fmtTime(you.pending_choice.remain)} 要揀，逾時走穩妥路線。</p>
+        <button class="btn" type="button" data-open-choice="1">打開抉擇</button>
+      </div>`;
+    } else if (you.exploring) {
+      exploreBlock = `<p class="assign-status">探索途中，約 ${fmtTime(you.explore_remaining)} 到達。</p>`;
+    } else if (you.recovering) {
+      exploreBlock = `<p class="assign-status">有人歸途休養，約 ${fmtTime(you.recover_remaining)} 返回待命。</p>`;
+    } else {
+      exploreBlock = `<button class="btn small" type="button" data-explore="1" ${exploreBtnDisabled ? "disabled" : ""}>出發探索（口糧 1、佔 1 人、60 秒）</button>
+        ${exploreReason ? `<p class="assign-hint muted">${escapeHtml(exploreReason)}</p>` : `<p class="assign-hint muted">事件有兩條確定代價，唔會改對方保護。</p>`}`;
+    }
+    const commandBody = `
+      <p class="desc">開局已有，不可拆。固定保護底線：口糧 6、合金 6，打輸都搶唔走。</p>
+      ${prot ? `<p class="tag">${prot}</p>` : ""}
+      <p class="assign-status">${escapeHtml(pressureTxt)}</p>
+      ${workerBtns("duty", you, state)}
+      ${exploreBlock}`;
+    const recycleUp = you.recycle_upgraded
+      ? `<p class="tag">已升級深拆。艙壓穩定且有人開工時，成座每週期再 +1 合金。</p>`
+      : `<button class="btn small" type="button" data-upgrade="recycle" ${paused || state.phase !== "playing" || you.alloy < 6 ? "disabled" : ""}>升級深拆（合金 6）</button>
+         <p class="assign-hint muted">${state.phase !== "playing" || paused ? "暫停或終局唔能升級。" : (you.alloy < 6 ? "合金不足，深拆要 6。" : "升級後要留 1 人值守先有加成。")}</p>`;
+    const recycleBody = workerBtns("recycle", you, state) + `<p class="desc">開局已有。每人每 30 秒產合金 1。</p>` + recycleUp;
+    const supplyUp = !you.supply_built ? "" : (you.supply_upgraded
+      ? `<p class="tag">已升級密植。艙壓穩定且有人開工時，成座每週期再 +1 口糧。</p>`
+      : `<button class="btn small" type="button" data-upgrade="supply" ${paused || state.phase !== "playing" || you.alloy < 4 ? "disabled" : ""}>升級密植（合金 4）</button>
+         <p class="assign-hint muted">${state.phase !== "playing" || paused ? "暫停或終局唔能升級。" : (you.alloy < 4 ? "合金不足，密植要 4。" : "升級後要留 1 人值守先有加成。")}</p>`);
     const supplyBody = you.supply_built
-      ? workerBtns("supply", you, state) + `<p class="desc">每人每 30 秒產口糧 2。</p>`
+      ? workerBtns("supply", you, state) + `<p class="desc">每人每 30 秒產口糧 2。</p>` + supplyUp
       : `<button class="btn small" type="button" data-build="supply">建造（合金 5）</button>`;
+    const trainBusy = !!you.training;
+    const trainPatrolDis = trainBusy || you.standby < 1 || you.rations < 3 || you.alloy < 2 || paused || state.phase !== "playing";
+    const trainWardDis = trainBusy || you.standby < 1 || you.rations < 4 || you.alloy < 1 || paused || state.phase !== "playing";
+    const trainPatrolWhy = trainBusy ? "隊列已有訓練。" : (you.standby < 1 ? "冇待命船員可以送去訓練。" : (you.rations < 3 ? "口糧不足（要 3）。" : (you.alloy < 2 ? "合金不足，練巡衛要 2。" : "")));
+    const trainWardWhy = trainBusy ? "隊列已有訓練。" : (you.standby < 1 ? "冇待命船員可以送去訓練。" : (you.rations < 4 ? "口糧不足，練守陣要 4。" : (you.alloy < 1 ? "合金不足，練守陣要 1。" : "")));
     const armoryBody = you.armory_built
-      ? `<div class="row">
-           <button class="btn small" type="button" data-train="1" ${you.training ? "disabled" : ""}>練兵（口糧 3、合金 2）</button>
-           <button class="btn small" type="button" data-open-recall="1" ${(!you.patrols || you.recalling_active) ? "disabled" : ""}>遣返</button>
+      ? `<p class="assign-status">巡衛 ${you.patrols}${you.locked_patrols ? "（鎖 " + you.locked_patrols + "）" : ""}　守陣 ${you.wards || 0}${you.locked_wards ? "（鎖 " + you.locked_wards + "）" : ""}</p>
+         <div class="row assign-row">
+           <button class="btn small" type="button" data-train="patrol" ${trainPatrolDis ? "disabled" : ""}>練巡衛（口糧 3、合金 2）</button>
+           <button class="btn small" type="button" data-train="ward" ${trainWardDis ? "disabled" : ""}>練守陣（口糧 4、合金 1）</button>
+         </div>
+         <p class="assign-hint muted">${escapeHtml(trainPatrolWhy || trainWardWhy || "守陣偏防衛，無攻勢唔能出征。")}</p>
+         <div class="row assign-row">
+           <button class="btn small" type="button" data-open-recall="patrol" ${(!you.patrols || you.recalling_active || paused) ? "disabled" : ""}>遣返巡衛</button>
+           <button class="btn small" type="button" data-open-recall="ward" ${(!(you.wards) || you.recalling_active || paused) ? "disabled" : ""}>遣返守陣</button>
          </div>
          <p class="desc">${trainTxt}${recallTxt ? "。" + recallTxt : ""}。隊列最多 1 個。被鎖兵不可遣返。</p>`
       : `<button class="btn small" type="button" data-build="armory">建造（合金 8）</button>`;
@@ -354,12 +400,13 @@
         <div class="res alloy"><div class="k">合金</div><div class="v">${you.alloy}</div></div>
         <div class="res"><div class="k">待命船員</div><div class="v">${you.standby}</div></div>
         <div class="res"><div class="k">巡衛${you.locked_patrols ? "（鎖 " + you.locked_patrols + "）" : ""}</div><div class="v">${you.patrols}</div></div>
+        <div class="res"><div class="k">守陣${you.locked_wards ? "（鎖 " + you.locked_wards + "）" : ""}</div><div class="v">${you.wards || 0}</div></div>
       </div>
-      ${opp ? `<p class="muted opp-line">對方：口糧 ${opp.rations}　合金 ${opp.alloy}　待命 ${opp.standby}　巡衛 ${opp.patrols}${opp.locked_patrols ? "（鎖 " + opp.locked_patrols + "）" : ""}。${oppProt}</p>` : ""}
-      ${facCard("指揮艙", "存放固定保護底線，協調整座前哨。", commandBody, "command")}
+      ${opp ? `<p class="muted opp-line">對方：口糧 ${opp.rations}　合金 ${opp.alloy}　待命 ${opp.standby}　巡衛 ${opp.patrols}${opp.locked_patrols ? "（鎖 " + opp.locked_patrols + "）" : ""}　守陣 ${opp.wards || 0}${opp.locked_wards ? "（鎖 " + opp.locked_wards + "）" : ""}。${oppProt}</p>` : ""}
+      ${facCard("指揮艙", "保護底線、值守艙壓、派出探索。", commandBody, "command")}
       ${facCard("回收廠", "從殘骸拆合金。", recycleBody, "recycle")}
       ${facCard("補給棚", "種植與過濾口糧。", supplyBody, "supply")}
-      ${facCard("整備艙", "把船員練成巡衛，或遣返。", armoryBody, "armory")}
+      ${facCard("整備艙", "把船員練成巡衛或守陣，或遣返。", armoryBody, "armory")}
       <section class="card">
         <h2 class="log-heading">戰況紀錄</h2>
         <ul class="log">${events || "<li>尚未有新事件。</li>"}</ul>
@@ -372,7 +419,7 @@
       ${state.phase !== "waiting" ? `
       <div class="dock">
         <button class="btn warn" id="btn-raid" type="button" ${raid.can && !paused ? "" : "disabled"}>出兵掠奪</button>
-        <div class="hint">${paused && state.phase === "playing" ? "計時已暫停，繼續後先可以出征。" : (raid.can ? "選擇出征人數後派出。出征巡衛會被鎖定至結算。單機唔檢查對手在線。" : escapeHtml(raid.reason || ""))}</div>
+        <div class="hint">${paused && state.phase === "playing" ? "計時已暫停，繼續後先可以出征。" : (raid.can ? "選擇出征構成。至少 1 名巡衛；守陣可一齊派出但無攻勢。對方守軍會全部鎖定。" : escapeHtml(raid.reason || ""))}</div>
       </div>` : ""}
     `;
     renderSheet();
@@ -387,12 +434,54 @@
   function sheetMarkup() {
     const sheet = store.sheet;
     if (!sheet) return "";
-    const title = sheet.kind === "raid" ? "出征人數" : "遣返人數";
-    const verb = sheet.kind === "raid" ? "確認出征" : "確認遣返";
-    const desc = sheet.kind === "raid"
-      ? "至少 1 名可出征巡衛。對方守軍會按開戰當刻鎖定。單機對電腦唔檢查對手在線。"
-      : "只可遣返未被鎖定嘅巡衛，30 秒後變回船員，不退回口糧或合金。";
     const err = store.error ? `<p class="err" id="sheet-err" role="alert">${escapeHtml(store.error)}</p>` : `<p class="err" id="sheet-err" role="alert"></p>`;
+    if (sheet.kind === "choice") {
+      const ev = sheet.event || {};
+      const remain = sheet.remain != null ? fmtTime(sheet.remain) : "";
+      const canB = !!sheet.can_pick_b;
+      return `
+        <div class="sheet" id="sheet">
+          <div class="card">
+            <h2>${escapeHtml(ev.title || "探索抉擇")}</h2>
+            <p class="desc">${escapeHtml(ev.text || "")}</p>
+            <p class="assign-status" id="choice-remain">尚餘 ${remain}，逾時自動走穩妥路線。</p>
+            ${err}
+            <button class="btn" id="choice-a" type="button">${escapeHtml((ev.optionA && ev.optionA.label) || "穩妥")}：${escapeHtml((ev.optionA && ev.optionA.detail) || "")}</button>
+            <button class="btn secondary" id="choice-b" type="button" ${canB ? "" : "disabled"}>${escapeHtml((ev.optionB && ev.optionB.label) || "冒險")}：${escapeHtml((ev.optionB && ev.optionB.detail) || "")}</button>
+            ${canB ? "" : `<p class="assign-hint muted">條件唔夠，只能選穩妥路線。</p>`}
+            <button class="btn secondary" id="sheet-cancel" type="button">稍後再揀（介面入口仍在）</button>
+          </div>
+        </div>`;
+    }
+    if (sheet.kind === "raid") {
+      const submitOn = sheet.submitEnabled !== false && (sheet.patrol || 0) >= 1;
+      return `
+        <div class="sheet" id="sheet">
+          <div class="card">
+            <h2>出征構成</h2>
+            <p class="desc">至少派出 1 名有攻勢嘅巡衛。守陣可一齊去但無攻勢，唔能單獨偷空城。對方守軍會按開戰當刻全部鎖定。</p>
+            <p class="assign-status">可出征：巡衛 ${sheet.patrolMax || 0}　守陣 ${sheet.wardMax || 0}</p>
+            ${err}
+            <div class="stepper raid-stepper">
+              <span class="step-label">巡衛</span>
+              <button class="btn small" id="raid-patrol-minus" type="button" ${ (sheet.patrol || 0) <= 0 ? "disabled" : "" } aria-label="減少巡衛">－</button>
+              <span id="raid-patrol-val">${sheet.patrol || 0}</span>
+              <button class="btn small" id="raid-patrol-plus" type="button" ${ (sheet.patrol || 0) >= (sheet.patrolMax || 0) ? "disabled" : "" } aria-label="增加巡衛">＋</button>
+            </div>
+            <div class="stepper raid-stepper">
+              <span class="step-label">守陣</span>
+              <button class="btn small" id="raid-ward-minus" type="button" ${ (sheet.ward || 0) <= 0 ? "disabled" : "" } aria-label="減少守陣">－</button>
+              <span id="raid-ward-val">${sheet.ward || 0}</span>
+              <button class="btn small" id="raid-ward-plus" type="button" ${ (sheet.ward || 0) >= (sheet.wardMax || 0) ? "disabled" : "" } aria-label="增加守陣">＋</button>
+            </div>
+            <button class="btn warn" id="sheet-ok" type="button" ${submitOn ? "" : "disabled"}>確認出征</button>
+            <button class="btn secondary" id="sheet-cancel" type="button">取消</button>
+          </div>
+        </div>`;
+    }
+    const unitName = sheet.unit === "ward" ? "守陣" : "巡衛";
+    const title = "遣返" + unitName + "人數";
+    const desc = "只可遣返未被鎖定嘅" + unitName + "，30 秒後變回船員，不退回口糧或合金。";
     return `
       <div class="sheet" id="sheet">
         <div class="card">
@@ -404,7 +493,7 @@
             <span id="sheet-val">${sheet.value}</span>
             <button class="btn small" id="sheet-plus" type="button">＋</button>
           </div>
-          <button class="btn warn" id="sheet-ok" type="button">${verb}</button>
+          <button class="btn warn" id="sheet-ok" type="button" ${sheet.submitEnabled === false ? "disabled" : ""}>確認遣返</button>
           <button class="btn secondary" id="sheet-cancel" type="button">取消</button>
         </div>
       </div>`;
@@ -418,8 +507,16 @@
   function patchSheetValue() {
     const el = document.getElementById("sheet-val");
     if (el && store.sheet) el.textContent = String(store.sheet.value);
+    const rp = document.getElementById("raid-patrol-val");
+    if (rp && store.sheet) rp.textContent = String(store.sheet.patrol || 0);
+    const rw = document.getElementById("raid-ward-val");
+    if (rw && store.sheet) rw.textContent = String(store.sheet.ward || 0);
     const err = document.getElementById("sheet-err");
     if (err) err.textContent = store.error || "";
+    const remain = document.getElementById("choice-remain");
+    if (remain && store.sheet && store.sheet.kind === "choice") {
+      remain.textContent = "尚餘 " + fmtTime(store.sheet.remain || 0) + "，逾時自動走穩妥路線。";
+    }
   }
 
   function renderSheet() {
@@ -435,19 +532,25 @@
     patchSheetValue();
   }
 
-  function openSheet(kind, max) {
-    if (!max || max < 1) {
-      showError(kind === "raid" ? "至少要有 1 名可出征巡衛。" : "沒有可遣返嘅巡衛。");
-      render();
-      return;
+  function openSheet(kind, max, extra) {
+    extra = extra || {};
+    const st = stateNow();
+    const flags = assignFlags(st);
+    let opened;
+    if (kind === "choice") {
+      opened = UiSync.openChoiceSheet(st && st.you, flags);
+    } else if (kind === "raid") {
+      opened = UiSync.openRaidSheet(st && st.you, st && st.raid, flags);
+    } else {
+      opened = UiSync.openRecallSheet(st && st.you, extra.unit || "patrol", flags);
     }
-    if (store.clock && store.clock.paused) {
-      showError("計時已暫停，請先按繼續。");
+    if (!opened || !opened.ok) {
+      showError((opened && opened.reason) || (kind === "raid" ? "至少要有 1 名可出征巡衛。守陣無攻勢唔能出征。" : (kind === "choice" ? "而家冇待抉擇嘅探索事件。" : "沒有可遣返嘅呢種兵力。")));
       render();
       return;
     }
     clearError();
-    store.sheet = { kind, max, value: max };
+    store.sheet = opened.sheet;
     sheetMounted = false;
     renderSheet();
     syncDockPadding();
@@ -492,8 +595,29 @@
     if (!store.sheet) return;
     const submitted = store.sheet;
     const kind = store.sheet.kind;
-    const value = store.sheet.value;
-    const ok = sendCommand({ type: kind, count: value }, { keepSheet: true });
+    if (kind === "choice") return;
+    const st = stateNow();
+    const flags = assignFlags(st);
+    const resolved = kind === "recall"
+      ? UiSync.recallSubmit(store.sheet, st && st.you, st, flags)
+      : UiSync.raidSubmit(store.sheet, st && st.you, st, flags);
+    if (!resolved.ok) {
+      showError(resolved.reason || "指令失敗。");
+      if (resolved.close) {
+        store.sheet = null;
+        unmountSheet();
+        render();
+        return;
+      }
+      if (st) {
+        const synced = UiSync.syncSheet(store.sheet, st, flags);
+        store.sheet = synced.sheet;
+      }
+      sheetMounted = false;
+      renderSheet();
+      return;
+    }
+    const ok = sendCommand(resolved.payload, { keepSheet: true });
     if (store.sheet !== submitted) return;
     if (ok) {
       store.sheet = null;
@@ -626,23 +750,44 @@
         return;
       }
       if (btn.dataset.train) {
-        sendCommand({ type: "train" });
+        sendCommand({ type: "train", unit: btn.dataset.train === "ward" ? "ward" : "patrol" });
+        return;
+      }
+      if (btn.dataset.upgrade) {
+        sendCommand({ type: "upgrade", facility: btn.dataset.upgrade });
+        return;
+      }
+      if (btn.dataset.explore) {
+        sendCommand({ type: "explore" });
+        return;
+      }
+      if (btn.dataset.openChoice) {
+        openSheet("choice");
         return;
       }
       if (btn.dataset.openRecall) {
         const st = stateNow();
-        openSheet("recall", st && st.you ? st.you.patrols : 0);
+        const unit = btn.dataset.openRecall === "ward" ? "ward" : "patrol";
+        const max = st && st.you ? (unit === "ward" ? st.you.wards : st.you.patrols) : 0;
+        openSheet("recall", max, { unit: unit });
         return;
       }
       if (btn.id === "btn-raid") {
-        const st = stateNow();
-        openSheet("raid", st && st.you ? st.you.patrols : 0);
+        openSheet("raid");
       }
     });
 
     sheetRoot.addEventListener("click", (e) => {
       const btn = e.target.closest("button");
       if (!btn || !store.sheet) return;
+      if (btn.id === "raid-patrol-minus" || btn.id === "raid-patrol-plus" || btn.id === "raid-ward-minus" || btn.id === "raid-ward-plus") {
+        const unit = (btn.id.indexOf("ward") !== -1) ? "ward" : "patrol";
+        const delta = (btn.id.indexOf("plus") !== -1) ? 1 : -1;
+        store.sheet = UiSync.adjustRaidSheet(store.sheet, unit, delta);
+        sheetMounted = false;
+        renderSheet();
+        return;
+      }
       if (btn.id === "sheet-minus") {
         store.sheet.value = Math.max(1, store.sheet.value - 1);
         patchSheetValue();
@@ -651,6 +796,33 @@
       if (btn.id === "sheet-plus") {
         store.sheet.value = Math.min(store.sheet.max, store.sheet.value + 1);
         patchSheetValue();
+        return;
+      }
+      if (btn.id === "choice-a" || btn.id === "choice-b") {
+        const option = btn.id === "choice-b" ? "B" : "A";
+        const submitted = store.sheet;
+        const st = stateNow();
+        const resolved = UiSync.choiceSubmit(st && st.you, option, assignFlags(st));
+        if (!resolved.ok) {
+          showError(resolved.reason || "唔能再選擇。");
+          if (resolved.close) {
+            store.sheet = null;
+            unmountSheet();
+            render();
+          } else {
+            patchSheetValue();
+          }
+          return;
+        }
+        const ok = sendCommand(resolved.payload, { keepSheet: true });
+        if (store.sheet !== submitted) return;
+        if (ok) {
+          store.sheet = null;
+          unmountSheet();
+          render();
+        } else {
+          patchSheetValue();
+        }
         return;
       }
       if (btn.id === "sheet-ok") { confirmSheet(); return; }
@@ -680,6 +852,22 @@
     if (store.clock.paused) return;
     store.match.advance();
     if (store.ai) store.ai.consider(store.match);
+    const view = store.match.publicView(C.HUMAN_ID);
+    const pending = view && view.you && view.you.pending_choice;
+    if (pending && store.sheet && store.sheet.kind !== "choice") {
+      // 抉擇限時，關閉人數視窗但唔自動彈出，畫面會留入口。
+      store.sheet = null;
+      unmountSheet();
+    }
+    if (store.sheet) {
+      const synced = UiSync.syncSheet(store.sheet, view, assignFlags(view));
+      if (synced.close) {
+        store.sheet = null;
+        unmountSheet();
+      } else {
+        store.sheet = synced.sheet;
+      }
+    }
     const pres = UiSync.presentationAfterAdvance(store.match.phase, !!store.sheet);
     if (pres.pause) store.clock.pause();
     persist(pres.persist);
