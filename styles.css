@@ -394,3 +394,40 @@ input[type="text"] {
   color: var(--ink);
 }
 .pill.cpu { color: var(--cyan); border-color: var(--line); }
+
+/* 派工相對操作：窄屏可讀可點，文字可換行，不改美術主題 */
+.assign-box {
+  min-width: 0;
+  max-width: 100%;
+}
+.assign-status {
+  font-size: 0.85rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  margin: 0 0 0.4rem;
+}
+.assign-row {
+  width: 100%;
+}
+.assign-row .btn.small {
+  flex: 1 1 8rem;
+  min-height: 2.6rem;
+  min-width: 0;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.9rem;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.25;
+}
+.assign-hint {
+  font-size: 0.78rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  margin: 0.35rem 0 0;
+}
+
+@media (max-width: 400px) {
+  .assign-row .btn.small {
+    flex: 1 1 calc(50% - 0.25rem);
+  }
+}
