@@ -2,6 +2,7 @@
   const Engine = window.StarfallSoloEngine;
   const Save = window.StarfallSoloSave;
   const AI = window.StarfallSoloAI;
+  const Catchup = window.StarfallSoloCatchup;
   const UiSync = window.StarfallSoloUiSync || {
     prepareRestartConfirm: function (clock) {
       const wasRunning = !!(clock && clock.paused === false);
@@ -51,6 +52,10 @@
     saveStatus: "",
     loadError: "",
     pausedNotice: false,
+    manualPaused: false,
+    confirming: false,
+    lastWallAnchor: null,
+    detached: false,
     pointerDown: false,
   };
   let sheetMounted = false;
@@ -90,14 +95,27 @@
     return store.error ? `<p class="err" id="app-err" role="alert">${escapeHtml(store.error)}</p>` : "";
   }
 
-  function persist(reason) {
+  function wallNow() {
+    return (Catchup && Catchup.defaultWall) ? Catchup.defaultWall() : (Date.now() / 1000);
+  }
+
+  function persist(reason, opts) {
     if (!store.match || !store.clock) return;
     try {
-      const paused = store.clock.paused;
-      const snap = store.match.snapshot({ paused: true });
+      const manual = !!store.manualPaused;
+      const snap = store.match.snapshot({ paused: manual });
       snap.ai = store.ai ? store.ai.toJSON() : null;
       snap.pause_reason = reason || "";
+      snap.manual_paused = manual;
+      snap.wall_anchor = Catchup.nextWallAnchor(store.lastWallAnchor, wallNow(), {
+        manualPaused: manual,
+        confirming: !!store.confirming,
+        playing: store.match.phase === "playing",
+        alreadyDetached: !!(opts && opts.alreadyDetached)
+      });
+      snap.catchup_schema = 2;
       Save.save(localStorage, snap);
+      store.lastWallAnchor = snap.wall_anchor;
       store.saveStatus = "已保存";
       store.loadError = "";
     } catch (err) {
@@ -108,10 +126,11 @@
 
   function pauseGame(reason) {
     if (!store.clock) return;
+    store.manualPaused = true;
     store.clock.pause();
     if (store.match && store.match.phase === "playing") {
       store.pausedNotice = true;
-      persist(reason || "pause");
+      persist(reason || "manual");
     }
   }
 
@@ -121,9 +140,68 @@
       store.pausedNotice = false;
       return;
     }
+    store.manualPaused = false;
+    store.detached = false;
     store.clock.resume();
     store.pausedNotice = false;
     persist("resume");
+  }
+
+  function detachClockKeepRunning() {
+    if (!store.clock || !store.match) return;
+    if (store.confirming) return;
+    const alreadyDetached = !!store.detached;
+    if (store.clock.pause) store.clock.pause();
+    persist(store.manualPaused ? "detach-paused" : "detach", { alreadyDetached: alreadyDetached });
+    if (!store.manualPaused) store.detached = true;
+  }
+
+  function applyReturnCatchup(wallAnchor) {
+    if (!Catchup || !store.match || !store.clock) return { skipped: true };
+    const report = Catchup.applyOfflineCatchup(
+      store.match,
+      store.ai,
+      store.clock,
+      {
+        manual_paused: store.manualPaused,
+        confirming: store.confirming,
+        wall_anchor: wallAnchor,
+      },
+      wallNow()
+    );
+    if (store.match.phase === "finished") {
+      if (store.clock.pause) store.clock.pause();
+      store.pausedNotice = false;
+      store.detached = false;
+      persist("caught-up-finished");
+      return report;
+    }
+    if (store.manualPaused) {
+      if (store.clock.pause) store.clock.pause();
+      store.pausedNotice = true;
+      persist("manual-stay");
+      return report;
+    }
+    store.detached = false;
+    store.clock.resume();
+    store.pausedNotice = false;
+    persist("caught-up");
+    return report;
+  }
+
+  function onReturnToForeground() {
+    if (store.screen !== "game" || !store.match) return;
+    if (store.confirming) return;
+    if (store.manualPaused) {
+      store.pausedNotice = store.match.phase === "playing";
+      render();
+      return;
+    }
+    let anchor = store.lastWallAnchor;
+    const loaded = Save.load(localStorage);
+    if (anchor == null && loaded.ok && loaded.data) anchor = loaded.data.wall_anchor;
+    applyReturnCatchup(anchor);
+    render();
   }
 
   function stateNow() {
@@ -150,8 +228,8 @@
         </div>
       </header>
       <section class="card">
-        <p class="lobby-copy">保留建造、採集、練兵同掠奪。對手係固定規則嘅自動前哨，遵守同你一樣嘅人口、資源、隊列、鎖兵、保護同生產，唔會暗送資源。計時只喺畫面前景而且未暫停時前進；背景或離開會暫停，避免返嚟已經敗局。存檔只寫呢個瀏覽器，讀檔唔會用牆上時鐘跳去未來。</p>
-        <p class="save-note">呢個係本機靜態原型，無需登入。兩個實體手機未必可以打開 127.0.0.1。重新開始要確認。</p>
+        <p class="lobby-copy">保留建造、採集、練兵同掠奪。對手係固定規則嘅自動前哨，遵守同你一樣嘅人口、資源、隊列、鎖兵、保護同生產，唔會暗送資源。離開時對局繼續，返回後補算，可能戰敗。瀏覽器背景唔保證真係執行，只喺你返嚟或重新載入時按經過時長追補，最長到 15 分鐘終局。只有按「暫停」先會真的停，暫停期間離開唔會補算。存檔只寫呢個瀏覽器。</p>
+        <p class="save-note">呢個係本機靜態原型，無需登入。兩個實體手機未必可以打開 127.0.0.1。重新開始要確認。舊存檔若未帶牆鐘錨點，會按已暫停處理，避免突然補算。</p>
         ${errorBlock()}
         ${corruptBox}
         <button class="btn" id="btn-continue" type="button" ${canContinue ? "" : "disabled"}>繼續存檔</button>
@@ -192,10 +270,12 @@
     const you = state.you;
     const opp = state.opponent;
     const raid = state.raid || {};
-    const paused = store.clock && store.clock.paused;
+    const paused = !!(store.manualPaused && state.phase === "playing");
     let pauseBanner = "";
-    if (paused && state.phase === "playing") {
-      pauseBanner = `<div class="pause-banner" role="status"><strong>計時已暫停。</strong>呢個原型只用前景時間，背景或離開唔會突然走完 15 分鐘。按「繼續」先再計時。存／讀檔都用遊戲時間，唔會跳去未來。</div>`;
+    if (paused) {
+      pauseBanner = `<div class="pause-banner" role="status"><strong>已手動暫停。</strong>呢段時間離開唔會補算。按「繼續」先再計時。</div>`;
+    } else if (state.phase === "playing") {
+      pauseBanner = `<div class="pause-banner" role="status"><strong>離開時對局繼續，返回後補算，可能戰敗。</strong>唔保證手機系統喺背景真執行；最長補算到 15 分鐘終局。</div>`;
     }
     let banner = "";
     if (state.phase === "finished" && state.result) {
@@ -233,7 +313,7 @@
 
     app.innerHTML = `
       <div class="topline">
-        <div class="time">${fmtTime(state.match_time)}<small>8 分鐘後先計勝　15 分鐘限時　單機　前景計時</small></div>
+        <div class="time">${fmtTime(state.match_time)}<small>8 分鐘後先計勝　15 分鐘限時　單機　離開後會補算</small></div>
         <div class="pills">
           <span class="pill on">${escapeHtml(you.display_name)}　你</span>
           <span class="pill cpu">${escapeHtml(opp ? opp.display_name : "自動前哨")}　電腦</span>
@@ -407,14 +487,19 @@
       startNewGame();
       return;
     }
-    // 確認前只暫停時計，唔寫入新存檔、亦唔覆蓋原存檔。
+    // 確認期間安全凍結；唔開新局、唔刪原檔。確認開檔只把同一場錨點清掉以免中斷後把確認時間補回；取消後立即寫新錨點。
+    store.confirming = true;
+    persist("confirm-open");
     const settle = UiSync.runRestartConfirm(store.clock, function () {
       return window.confirm("確定重新開始？確認後會用新對局覆蓋呢個瀏覽器嘅單機存檔。損壞嘅原存檔亦只會喺你確認後先被覆蓋。");
     });
+    store.confirming = false;
     if (settle.startNew) {
       startNewGame();
       return;
     }
+    store.detached = false;
+    persist("confirm-cancel");
     if (store.screen === "game") render();
   }
 
@@ -425,6 +510,8 @@
     store.ai = new AI.SoloAI();
     store.ai.consider(store.match);
     store.screen = "game";
+    store.manualPaused = false;
+    store.detached = false;
     store.pausedNotice = false;
     store.sheet = null;
     unmountSheet();
@@ -453,9 +540,22 @@
     store.ai = new AI.SoloAI();
     store.ai.restore(loaded.data.ai);
     store.screen = "game";
-    store.pausedNotice = store.match.phase === "playing";
+    store.manualPaused = !!loaded.data.manual_paused;
+    store.lastWallAnchor = loaded.data.wall_anchor != null ? loaded.data.wall_anchor : null;
     store.sheet = null;
     unmountSheet();
+    if (store.match.phase !== "playing") {
+      store.pausedNotice = false;
+      if (store.clock.pause) store.clock.pause();
+      render();
+      return;
+    }
+    if (store.manualPaused) {
+      store.pausedNotice = true;
+      render();
+      return;
+    }
+    applyReturnCatchup(loaded.data.wall_anchor);
     render();
   }
 
@@ -472,7 +572,7 @@
       if (btn.id === "btn-new" || btn.id === "btn-new-ingame") { confirmNewGame(); return; }
       if (btn.id === "btn-continue") { continueSave(); return; }
       if (btn.id === "btn-menu") {
-        pauseGame("menu");
+        detachClockKeepRunning();
         store.screen = "menu";
         store.sheet = null;
         unmountSheet();
@@ -528,14 +628,13 @@
 
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "hidden") {
-        if (store.screen === "game") pauseGame("hidden");
+        if (store.screen === "game") detachClockKeepRunning();
       } else if (document.visibilityState === "visible" && store.screen === "game") {
-        store.pausedNotice = true;
-        render();
+        onReturnToForeground();
       }
     });
     window.addEventListener("pagehide", () => {
-      if (store.screen === "game") pauseGame("pagehide");
+      if (store.screen === "game") detachClockKeepRunning();
     });
     window.addEventListener("resize", syncDockPadding);
   }

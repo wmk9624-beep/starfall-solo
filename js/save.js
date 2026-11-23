@@ -1,11 +1,11 @@
 /* 本機 localStorage 存檔。損壞只提示，唔默默刪除。讀檔用遊戲時間，唔用牆上時鐘跳未來。 */
 (function (root, factory) {
   if (typeof module === "object" && module.exports) {
-    module.exports = factory(require("./engine.js"));
+    module.exports = factory(require("./engine.js"), require("./catchup.js"));
   } else {
-    root.StarfallSoloSave = factory(root.StarfallSoloEngine);
+    root.StarfallSoloSave = factory(root.StarfallSoloEngine, root.StarfallSoloCatchup);
   }
-})(typeof globalThis !== "undefined" ? globalThis : this, function (Engine) {
+})(typeof globalThis !== "undefined" ? globalThis : this, function (Engine, Catchup) {
   "use strict";
   var SAVE_KEY = "starfall-solo.v1";
   var C = Engine.CONST;
@@ -80,6 +80,12 @@
     if (data.version !== 1) throw new Error("存檔版本不支援。");
     if (!isFiniteNumber(data.clock) || data.clock < 0) throw new Error("存檔計時無效。");
     if (typeof data.paused !== "boolean") throw new Error("暫停標記無效。");
+    if (data.manual_paused != null && typeof data.manual_paused !== "boolean") {
+      throw new Error("手動暫停標記無效。");
+    }
+    if (data.wall_anchor != null && !isFiniteNumber(data.wall_anchor)) {
+      throw new Error("牆鐘錨點無效。");
+    }
     var m = data.match;
     if (!m || typeof m !== "object") throw new Error("缺對局資料。");
     if (m.mode !== "solo") throw new Error("對局類型不符。");
@@ -158,6 +164,9 @@
     }
     try {
       var data = JSON.parse(raw);
+      if (Catchup && typeof Catchup.migrateSnapshot === "function") {
+        data = Catchup.migrateSnapshot(data);
+      }
       validateSnapshot(data);
       return { ok: true, empty: false, data: data, raw: raw };
     } catch (err) {
@@ -172,8 +181,12 @@
   }
 
   function save(storage, snapshot) {
-    validateSnapshot(snapshot);
-    writeRaw(storage, JSON.stringify(snapshot));
+    var data = snapshot;
+    if (Catchup && typeof Catchup.migrateSnapshot === "function") {
+      data = Catchup.migrateSnapshot(snapshot);
+    }
+    validateSnapshot(data);
+    writeRaw(storage, JSON.stringify(data));
     return { ok: true };
   }
 
