@@ -3,11 +3,12 @@
  * 可注入時鐘；前景／暫停由 ForegroundClock 負責，存檔只記遊戲時間。
  */
 (function (root, factory) {
-  if (typeof module === "object" && module.exports) module.exports = factory(require("./events.js"));
-  else root.StarfallSoloEngine = factory(root.StarfallSoloEvents);
-})(typeof globalThis !== "undefined" ? globalThis : this, function (Events) {
+  if (typeof module === "object" && module.exports) module.exports = factory(require("./events.js"), require("./story-engine.js"));
+  else root.StarfallSoloEngine = factory(root.StarfallSoloEvents, root.StarfallSoloStoryEngine);
+})(typeof globalThis !== "undefined" ? globalThis : this, function (Events, StoryEngine) {
   "use strict";
   if (!Events) throw new Error("缺少探索事件表。");
+  if (!StoryEngine) throw new Error("缺少故事規則模組。");
 
   var C = {
     START_RATIONS: 20,
@@ -314,6 +315,7 @@
     this.events = [];
     this.event_seq = 0;
     this.mode = "solo";
+    this.story = StoryEngine.createState();
   }
 
   Match.prototype.playerList = function () {
@@ -338,6 +340,7 @@
     this.players[C.AI_ID] = makePlayer(C.AI_ID, C.AI_NAME);
     this.phase = "playing";
     this.started_at = now;
+    this.story = StoryEngine.createState();
     this.log(now, "倖存者同自動前哨同時降落殘艙。單機對局開始計時（只計前景時間）。", "sys");
     return this;
   };
@@ -665,12 +668,14 @@
   Match.prototype._finishWin = function (t, winner, reason) {
     this.phase = "finished";
     this.result = { kind: "win", winner_id: winner.player_id, reason: reason, finished_at: t };
+    this.story = StoryEngine.closeIfUnfinished(this.story, t);
     this.log(t, "對局結束：" + winner.display_name + "勝出。" + reason + "。", "result");
   };
 
   Match.prototype._finishDraw = function (t, reason) {
     this.phase = "finished";
     this.result = { kind: "draw", winner_id: null, reason: reason, finished_at: t };
+    this.story = StoryEngine.closeIfUnfinished(this.story, t);
     this.log(t, "對局結束：和局。" + reason + "。", "result");
   };
 
@@ -701,6 +706,7 @@
     else if (typ === "raid") result = this._cmdRaid(player, payload, now);
     else if (typ === "explore") result = this._cmdExplore(player, payload, now);
     else if (typ === "choose") result = this._cmdChoose(player, payload, now);
+    else if (typ === "story_choice") result = this._cmdStoryChoice(player, payload, now);
     else throw new CommandError("唔識呢種指令。", "bad_request");
 
     var wrapped = Object.assign({ ok: true, command_id: commandId }, result);
@@ -1083,6 +1089,48 @@
     };
   };
 
+  Match.prototype._cmdStoryChoice = function (player, payload, now) {
+    if (player.player_id !== C.HUMAN_ID) {
+      throw new CommandError("故事指令只限玩家。", "unauthorized");
+    }
+    var applied = StoryEngine.applyChoice({
+      story: this.story,
+      choice_id: payload && payload.choice_id,
+      node_id: payload && payload.node_id,
+      hero_id: payload && payload.hero_id,
+      decode_mode: payload && payload.decode_mode,
+      expected_story_revision: payload && payload.expected_story_revision,
+      command_id: payload && payload.command_id,
+      player_alloy: player.alloy,
+      player_rations: player.rations,
+      phase: this.phase,
+      clock: this.clock,
+      now: now
+    });
+    if (!applied.ok) {
+      throw new CommandError(applied.reason || "唔能提交呢個故事選擇。", applied.code || "rejected");
+    }
+    if (applied.duplicate) {
+      return { story: StoryEngine.view(this.story), duplicate: true };
+    }
+    if (applied.alloy_delta) player.alloy += applied.alloy_delta;
+    if (applied.rations_delta) player.rations += applied.rations_delta;
+    if (player.alloy < 0 || player.rations < 0) {
+      throw new CommandError("資源不足，故事選擇未成立。", "no_resource");
+    }
+    this.story = applied.story;
+    if (!invariantsOk(this)) {
+      throw new CommandError("故事選擇後狀態不成立。", "invariant");
+    }
+    var label = (payload && payload.choice_id) || "故事選擇";
+    this.log(now, player.display_name + "確認咗故事選擇：" + label + "。", "story");
+    return {
+      story: StoryEngine.view(this.story),
+      alloy_spent: applied.alloy_delta ? -applied.alloy_delta : 0,
+      rations_spent: applied.rations_delta ? -applied.rations_delta : 0
+    };
+  };
+
   Match.prototype.publicView = function (viewerId, now) {
     if (now == null) now = this.clock.now();
     this.advance(now);
@@ -1142,6 +1190,7 @@
       raid: { can: reason == null, reason: reason, max: viewer.patrols },
       explore: { can: exploreReason == null, reason: exploreReason },
       paused: !!(this.clock && this.clock.paused),
+      story: StoryEngine.view(this.story),
     };
   };
 
@@ -1151,8 +1200,11 @@
       version: 1,
       kind: "starfall-solo",
       expansion_schema: 1,
+      story_schema: 1,
+      story: this.story ? clone(this.story) : StoryEngine.createState(),
       clock: this.clock.now(),
       paused: extra.paused != null ? !!extra.paused : !!(this.clock && this.clock.paused),
+      ui_route: extra.ui_route != null ? clone(extra.ui_route) : null,
       match: {
         phase: this.phase,
         started_at: this.started_at,
@@ -1186,6 +1238,8 @@
     m.events = data.events ? clone(data.events) : [];
     m.event_seq = data.event_seq || 0;
     m.players = data.players ? clone(data.players) : {};
+    if (snap.story) m.story = clone(snap.story);
+    else m.story = StoryEngine.createState();
     if (typeof clock.set === "function") clock.set(snap.clock);
     return m;
   }
@@ -1310,5 +1364,6 @@
     upgradeBonusActive: upgradeBonusActive,
     Events: Events,
     EXPANSION_DEFAULTS: EXPANSION_DEFAULTS,
+    StoryEngine: StoryEngine,
   };
 });

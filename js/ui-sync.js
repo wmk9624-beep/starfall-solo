@@ -341,6 +341,25 @@
     return !!(you && you.pending_choice);
   }
 
+  function captureCommandCheckpoint(match, ai, extra) {
+    if (match && typeof match.advance === "function") match.advance();
+    return {
+      snap: match.snapshot(extra || {}),
+      ai: ai && typeof ai.toJSON === "function" ? ai.toJSON() : null
+    };
+  }
+
+  function restoreCommandCheckpoint(engine, clock, checkpoint, ai) {
+    if (!checkpoint || !checkpoint.snap) return null;
+    var restored = engine.restoreMatch(checkpoint.snap, clock);
+    if (ai && checkpoint.ai && typeof ai.restore === "function") ai.restore(checkpoint.ai);
+    return restored;
+  }
+
+  function saveSnapshotOrThrow(Save, storage, snapshot) {
+    return Save.save(storage, snapshot);
+  }
+
   return {
     prepareRestartConfirm: prepareRestartConfirm,
     settleRestartConfirm: settleRestartConfirm,
@@ -358,6 +377,9 @@
     openRecallSheet: openRecallSheet,
     recallSubmit: recallSubmit,
     syncSheet: syncSheet,
-    choiceEntryVisible: choiceEntryVisible
+    choiceEntryVisible: choiceEntryVisible,
+    captureCommandCheckpoint: captureCommandCheckpoint,
+    restoreCommandCheckpoint: restoreCommandCheckpoint,
+    saveSnapshotOrThrow: saveSnapshotOrThrow
   };
 });

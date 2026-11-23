@@ -133,6 +133,26 @@
     checkComp(b.defense_comp, b.defense_force, "守方");
   }
 
+  function validateStory(data) {
+    if (!Engine.StoryEngine) throw new Error("缺少故事規則模組。");
+    var SE = Engine.StoryEngine;
+    if (Object.prototype.hasOwnProperty.call(data, "story_schema") && data.story_schema !== 1) {
+      throw new Error("故事存檔版本不支援。");
+    }
+    if (SE.hasStoryPayload(data)) {
+      if (data.story_schema !== 1) throw new Error("新故事存檔缺有效版本標記。");
+      if (!data.story || typeof data.story !== "object") throw new Error("新存檔缺故事欄位。");
+      SE.validateStoryState(data.story);
+      var finished = data.match && data.match.phase === "finished";
+      if (finished && data.story.chapter_status === "not_started" && data.story.ending_id == null && !data.story.legacy_finished_unstarted) {
+        throw new Error("已結束對局的故事狀態不完整。");
+      }
+    }
+    if (data.ui_route != null && typeof data.ui_route !== "object") {
+      throw new Error("介面路由資料無效。");
+    }
+  }
+
   function validateSnapshot(data) {
     if (!data || typeof data !== "object") throw new Error("存檔不是物件。");
     if (data.kind !== "starfall-solo") throw new Error("不是單機存檔。");
@@ -185,6 +205,7 @@
     var human = m.players[C.HUMAN_ID];
     var ai = m.players[C.AI_ID];
     if (data.expansion_schema !== 1) throw new Error("擴充版本標記無效。");
+    validateStory(data);
     if (pending) {
       var atk = m.players[pending.attacker_id];
       var dfn = m.players[pending.defender_id];
@@ -235,6 +256,9 @@
         data = Catchup.migrateSnapshot(data);
       }
       data = Engine.expandMigrate(data);
+      if (Engine.StoryEngine && typeof Engine.StoryEngine.migrateSnapshot === "function") {
+        data = Engine.StoryEngine.migrateSnapshot(data);
+      }
       validateSnapshot(data);
       return { ok: true, empty: false, data: data, raw: raw };
     } catch (err) {
@@ -254,6 +278,9 @@
       data = Catchup.migrateSnapshot(snapshot);
     }
     data = Engine.expandMigrate(data);
+    if (Engine.StoryEngine && typeof Engine.StoryEngine.migrateSnapshot === "function") {
+      data = Engine.StoryEngine.migrateSnapshot(data);
+    }
     validateSnapshot(data);
     writeRaw(storage, JSON.stringify(data));
     return { ok: true };
