@@ -251,13 +251,40 @@
       </section>`;
   }
 
-  function workerBtns(facility, count, built) {
-    if (!built) return "";
-    const buttons = [0, 1, 2].map((n) => {
-      const on = n === count;
-      return `<button class="btn${on ? "" : " small"}" type="button" data-assign="${facility}" data-count="${n}" ${on ? "disabled" : ""}>${n} 人</button>`;
-    }).join("");
-    return `<div class="row"><span class="tag">而家 ${count} 人</span>${buttons}</div>`;
+  function assignFlags(state) {
+    return {
+      paused: !!(store.manualPaused || (store.clock && store.clock.paused)),
+      finished: !!(state && state.phase === "finished")
+    };
+  }
+
+  function workerBtns(facility, you, state) {
+    if (facility === "supply" && (!you || !you.supply_built)) return "";
+    const current = facility === "recycle" ? you.recycle_workers : you.supply_workers;
+    const others = facility === "recycle" ? you.supply_workers : you.recycle_workers;
+    const ctrl = UiSync.assignControlState({
+      current: current,
+      standby: you.standby,
+      productionOthers: others,
+      paused: assignFlags(state).paused,
+      finished: assignFlags(state).finished,
+      built: true
+    });
+    const reasons = [];
+    if (!ctrl.dec.enabled && ctrl.dec.reason) reasons.push(ctrl.dec.reason);
+    if (!ctrl.inc.enabled && ctrl.inc.reason) reasons.push(ctrl.inc.reason);
+    const hint = reasons.length
+      ? reasons.join(" ") + " 調回採集人手可用嚟練兵。"
+      : "調回採集人手可用嚟練兵。";
+    return `
+      <div class="assign-box">
+        <p class="assign-status">已派 ${ctrl.current} 人（最多 ${ctrl.maxPer}）　全域待命 ${ctrl.standby} 人</p>
+        <div class="row assign-row">
+          <button class="btn small" type="button" data-assign="${facility}" data-assign-delta="-1" ${ctrl.dec.enabled ? "" : "disabled"} aria-label="調回 1 人">－調回1人</button>
+          <button class="btn small" type="button" data-assign="${facility}" data-assign-delta="1" ${ctrl.inc.enabled ? "" : "disabled"} aria-label="派 1 人">＋派1人</button>
+        </div>
+        <p class="assign-hint muted">${escapeHtml(hint)}</p>
+      </div>`;
   }
 
   function renderGame() {
@@ -296,9 +323,9 @@
     const oppProt = opp && opp.protection_remaining > 0 ? `對方受襲保護 ${fmtTime(opp.protection_remaining)}` : "";
 
     const commandBody = `<p class="desc">開局已有，不可拆。固定保護底線：口糧 6、合金 6，打輸都搶唔走。</p>${prot ? `<p class="tag">${prot}</p>` : ""}`;
-    const recycleBody = workerBtns("recycle", you.recycle_workers, true) + `<p class="desc">開局已有。每人每 30 秒產合金 1。</p>`;
+    const recycleBody = workerBtns("recycle", you, state) + `<p class="desc">開局已有。每人每 30 秒產合金 1。</p>`;
     const supplyBody = you.supply_built
-      ? workerBtns("supply", you.supply_workers, true) + `<p class="desc">每人每 30 秒產口糧 2。</p>`
+      ? workerBtns("supply", you, state) + `<p class="desc">每人每 30 秒產口糧 2。</p>`
       : `<button class="btn small" type="button" data-build="supply">建造（合金 5）</button>`;
     const armoryBody = you.armory_built
       ? `<div class="row">
@@ -582,7 +609,16 @@
       if (btn.id === "btn-pause") { pauseGame("manual"); render(); return; }
       if (btn.id === "btn-resume") { resumeGame(); render(); return; }
       if (btn.dataset.assign) {
-        sendCommand({ type: "assign", facility: btn.dataset.assign, count: Number(btn.dataset.count) });
+        const st = stateNow();
+        const delta = btn.dataset.assignDelta != null ? Number(btn.dataset.assignDelta) : NaN;
+        if (!st || !st.you) return;
+        const resolved = UiSync.resolveRelativeAssign(st.you, btn.dataset.assign, delta, assignFlags(st));
+        if (!resolved.ok) {
+          showError(resolved.reason);
+          render();
+          return;
+        }
+        sendCommand(resolved.payload);
         return;
       }
       if (btn.dataset.build) {
