@@ -314,6 +314,10 @@
           <button class="btn secondary" id="btn-campaign-import" type="button">從舊存檔複製可核實故事歷史</button>
           <p class="desc">原單局仍可用上方按鈕繼續；舊檔若缺歷史會標示「未記錄」，不假造故事選擇。</p>
         </div>` : ''}
+        <div class="outpost-mode-link"><h2>長期基地＋15分鐘外拓 · 獨立模式</h2>
+          <p class="desc">從墜星求救開始，長期保留基地與傷亡。此模式使用獨立存檔，不會讀寫上方兩種模式的進度。</p>
+          <a class="btn" href="outpost.html" id="link-outpost">進入長期前哨</a>
+        </div>
       </section>`;
   }
 
@@ -2061,7 +2065,7 @@
     bindEventsOnce();
     renderMenu();
   }
-  const testMode = typeof window !== "undefined" && window.__STARFALL_TEST__;
+  const testMode = typeof window !== "undefined" && (window.__STARFALL_TEST__ || window.__STARFALL_OUTPOST_PRIMARY__);
   if (!testMode) {
     bootApp();
     setInterval(tick, TICK_MS);
