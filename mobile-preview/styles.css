@@ -1157,3 +1157,54 @@ button:focus-visible, summary:focus-visible, [tabindex="-1"]:focus-visible {
     scroll-behavior: auto !important;
   }
 }
+
+/* Long-term outpost UX v1: compact, legible controls; no change to simulation. */
+.outpost-hud { padding-block: .36rem; }
+.outpost-hud-head { gap: .45rem; }
+.outpost-hud-head .outpost-eyebrow { font-size: .88rem; letter-spacing: .035em; }
+.outpost-stats { gap: .35rem; margin: .35rem 0; }
+.outpost-stat { padding: .4rem .52rem; }
+.outpost-state-line { gap: .2rem .65rem; line-height: 1.45; }
+.outpost-alert { padding: .33rem .52rem; gap: .3rem .55rem; }
+.outpost-threat { flex: 1 1 12rem; }
+.outpost-alert-link { padding: .38rem .55rem; line-height: 1.35; min-height: 44px; }
+.outpost-nav-badge { font-size: .85rem; white-space: nowrap; }
+.outpost-first-step { line-height: 1.65; }
+.outpost-jump {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-height: 44px; border: 1px solid var(--cyan); border-radius: .55rem;
+  padding: .4rem .7rem; color: #ecffff; background: #294452;
+  font: inherit; font-size: 1rem; font-weight: 650; cursor: pointer;
+  vertical-align: middle; margin: .25rem 0 .25rem .3rem;
+}
+.outpost-labor-anchor { scroll-margin-block-start: 1rem; }
+.outpost-return-control { border: 1px solid rgba(124,231,212,.32); background: rgba(124,231,212,.055);
+  border-radius: .75rem; padding: .7rem .8rem; margin: .75rem 0; }
+.outpost-return-rule, .outpost-return-wait { font-size: 1rem; line-height: 1.6; margin: 0 0 .55rem; }
+.outpost-return-wait { margin-bottom: 0; color: #d0f4e6; }
+.outpost-return-control .btn { width: 100%; margin: 0; min-height: 44px; }
+.outpost-hero-record { background: rgba(124,231,212,.055); border: 1px solid rgba(124,231,212,.33);
+  border-radius: .7rem; padding: .75rem .85rem; margin: .65rem 0 1rem; }
+.outpost-hero-record h3 { margin-top: 0; }
+.outpost-report-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr));
+  gap: .4rem; margin: .55rem 0 1rem; }
+.outpost-report-grid > div { min-width: 0; border-radius: .5rem; background: #1a2b46;
+  padding: .55rem .65rem; overflow-wrap: anywhere; }
+.outpost-report-grid dt { color: #c2d6e8; font-size: .94rem; line-height: 1.5; }
+.outpost-report-grid dd { font-size: 1.07rem; line-height: 1.55; font-weight: 700;
+  font-variant-numeric: tabular-nums; margin: .15rem 0 0; }
+@media(max-width:390px) {
+  .outpost-hud { padding-block: .3rem; }
+  .outpost-stats { margin: .3rem 0; gap: .3rem; }
+  .outpost-alert { gap: .28rem .45rem; }
+  .outpost-threat { flex-basis: 100%; }
+  .outpost-alert-link { flex: 1 1 auto; }
+}
+@media(max-width:340px) {
+  .outpost-report-grid { grid-template-columns: minmax(0,1fr); }
+}
+@media(max-height:480px) and (orientation:landscape) {
+  .outpost-hud { padding-block: .18rem; }
+  .outpost-stats { margin: .18rem 0; }
+  .outpost-alert { padding-block: .18rem; }
+}
