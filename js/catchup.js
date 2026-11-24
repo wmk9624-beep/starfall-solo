@@ -107,6 +107,7 @@
     if (match.battle && !match.battle.resolved) {
       addTime(times, match.battle.resolves_at, now, cap);
     }
+    if (match.comms && match.comms.next_at != null) addTime(times, match.comms.next_at, now, cap);
     if (ai && ai._lastRaidAt != null) addTime(times, ai._lastRaidAt + 90, now, cap);
     if (ai && ai._lastExploreAt != null) addTime(times, ai._lastExploreAt + 90, now, cap);
     times.sort(function (a, b) { return a - b; });

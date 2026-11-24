@@ -6,6 +6,117 @@
   "use strict";
   if (!Data) throw new Error("缺少故事資料模組。");
 
+  var Comms = (function () {
+  var GUIDE = ['assign', 'build', 'explore'];
+  var HERO_ADVICE = {
+    'HERO-01': '璃棱：先檢查航線與合金儲備；未知地形要預留回程。',
+    'HERO-02': '秋纓：先穩住補給與艙壓；不要為一段訊號耗盡口糧。',
+    'HERO-03': '烏燼：先查看保護與防線，再決定是否暴露前哨座標。'
+  };
+  function createState(started) {
+    return {
+      schema: 1, stage: 'waiting_first', next_at: started + 45,
+      replies: [], decisions: [], outcome: null, variant: null,
+      closed_by: null, clue: false,
+      guide: { assign: 'pending', build: 'pending', explore: 'pending' }
+    };
+  }
+  function clone(x) { return JSON.parse(JSON.stringify(x)); }
+  function isNum(x) { return typeof x === 'number' && isFinite(x) && x >= 0; }
+  function validate(s) {
+    if (!s || typeof s !== 'object' || s.schema !== 1) throw Error('通訊版本無效。');
+    var stages = ['waiting_first','choice_one','waiting_second','choice_two','waiting_third','completed','forced','unavailable'];
+    if (stages.indexOf(s.stage) < 0) throw Error('通訊階段無效。');
+    if (!Array.isArray(s.replies) || !Array.isArray(s.decisions) || s.replies.length > 3 || s.decisions.length > 2) throw Error('通訊紀錄無效。');
+    if (!s.guide || typeof s.guide !== 'object') throw Error('通訊引導缺失。');
+    GUIDE.forEach(function (k) { if (['pending','done','skipped'].indexOf(s.guide[k]) < 0) throw Error('引導狀態無效。'); });
+    if (typeof s.clue !== 'boolean') throw Error('探索線索無效。');
+    var choices = [['COMMS-RIDGE','COMMS-QUIET'],['COMMS-FREE','COMMS-BOOST']];
+    s.decisions.forEach(function (x, i) { if (choices[i].indexOf(x) < 0) throw Error('通訊選項無效。'); });
+    s.replies.forEach(function (x, i) { if (x !== i + 1) throw Error('通訊回覆序號無效。'); });
+    var shape = {
+      waiting_first:[0,0], choice_one:[1,0], waiting_second:[1,1], choice_two:[2,1], waiting_third:[2,2], completed:[3,2]
+    };
+    if (shape[s.stage] && (s.replies.length !== shape[s.stage][0] || s.decisions.length !== shape[s.stage][1])) throw Error('通訊流程與紀錄矛盾。');
+    if (['waiting_first','waiting_second','waiting_third'].indexOf(s.stage) >= 0) {
+      if (!isNum(s.next_at)) throw Error('等待時間無效。');
+    } else if (s.next_at !== null) throw Error('非等待階段不得有期限。');
+    if (s.stage === 'completed') {
+      if (['located','sheltered'].indexOf(s.outcome) < 0 || !['base','verified'].includes(s.variant) || s.closed_by !== 'player') throw Error('通訊結局無效。');
+      if (s.outcome !== (s.decisions[0] === 'COMMS-RIDGE' ? 'located' : 'sheltered')) throw Error('通訊結局與選擇矛盾。');
+      if (s.variant !== (s.decisions[1] === 'COMMS-BOOST' ? 'verified' : 'base')) throw Error('通訊版本與選擇矛盾。');
+    } else if (s.stage === 'forced') {
+      if (s.outcome !== 'unresolved' || s.closed_by !== 'system' || s.variant !== 'forced') throw Error('通訊強制收束無效。');
+    } else if (s.stage === 'unavailable') {
+      if (s.outcome !== null || s.closed_by !== null || s.replies.length || s.decisions.length) throw Error('舊終局通訊狀態無效。');
+    } else if (s.outcome !== null || s.variant !== null || s.closed_by !== null) throw Error('未完成通訊卻有結果。');
+    if (s.stage === 'completed' && s.replies.length !== 3) throw Error('通訊回覆未齊。');
+    return s;
+  }
+  function migrate(snapshot) {
+    if (!snapshot || typeof snapshot !== 'object') return snapshot;
+    var hasSchema = Object.prototype.hasOwnProperty.call(snapshot,'comms_schema');
+    var hasComms = Object.prototype.hasOwnProperty.call(snapshot,'comms');
+    if (hasSchema || hasComms) return snapshot;
+    var n = Object.assign({}, snapshot);
+    n.comms_schema = 1;
+    var m = snapshot.match || {};
+    n.comms = createState(m.started_at == null ? 0 : m.started_at);
+    if (m.phase === 'finished') { n.comms.stage = 'unavailable'; n.comms.next_at = null; }
+    return n;
+  }
+  function arrive(s, now) {
+    if (!s || s.next_at == null || now + 0.00001 < s.next_at) return false;
+    if (s.stage === 'waiting_first') { s.replies.push(1); s.stage='choice_one'; s.next_at=null; return true; }
+    if (s.stage === 'waiting_second') { s.replies.push(2); s.stage='choice_two'; s.next_at=null; return true; }
+    if (s.stage === 'waiting_third') {
+      s.replies.push(3); s.next_at=null; s.stage='completed';
+      s.outcome = s.decisions[0] === 'COMMS-RIDGE' ? 'located' : 'sheltered';
+      s.variant = s.decisions[1] === 'COMMS-BOOST' ? 'verified' : 'base';
+      s.closed_by='player'; return true;
+    }
+    return false;
+  }
+  function choice(s, id, now, alloy) {
+    var cost = 0;
+    if (s.stage === 'choice_one') {
+      if (id !== 'COMMS-RIDGE' && id !== 'COMMS-QUIET') throw Error('通訊選項不可用。');
+      s.decisions.push(id); s.stage='waiting_second'; s.next_at=now+60;
+    } else if (s.stage === 'choice_two') {
+      if (id !== 'COMMS-FREE' && id !== 'COMMS-BOOST') throw Error('通訊選項不可用。');
+      cost = id === 'COMMS-BOOST' ? 2 : 0;
+      if (alloy < cost) throw Error('合金不足；可選免費回覆。');
+      s.decisions.push(id); s.stage='waiting_third'; s.next_at=now+75;
+    } else throw Error('目前毋須回覆電台。');
+    return cost;
+  }
+  function observeAction(s, typ, payload) {
+    if (!s || !s.guide) return;
+    if (typ === 'assign' && payload.facility === 'recycle' && Number(payload.count) > 0 && s.guide.assign === 'pending') s.guide.assign='done';
+    if (typ === 'build' && s.guide.build === 'pending') s.guide.build='done';
+    if (typ === 'explore') {
+      if (s.guide.explore === 'pending') s.guide.explore='done';
+    }
+  }
+  function forceClose(s) {
+    if (s && s.stage !== 'completed' && s.stage !== 'unavailable' && s.stage !== 'forced') {
+      s.stage='forced'; s.next_at=null; s.outcome='unresolved'; s.variant='forced'; s.closed_by='system';
+    }
+  }
+  function advice(story) {
+    var hero = story && story.assigned_hero;
+    if (!hero && story && story.flags) hero=story.flags.initial_trust;
+    return HERO_ADVICE[hero] || '人格檔案：先分配六名倖存者的工作，保留必要的口糧與合金。';
+  }
+  function view(s, now, story) {
+    var out=clone(s);
+    out.remaining = s.next_at == null ? null : Math.max(0,s.next_at-now);
+    out.advice = advice(story);
+    return out;
+  }
+  return {createState:createState, validate:validate, migrate:migrate, arrive:arrive, choice:choice, observeAction:observeAction, forceClose:forceClose, advice:advice, view:view};
+  })();
+
   var HERO_FLAGS = {
     "HERO-01": { trust: "trust_navigation", confirmed: "route_confirmed", verified: "route_verified" },
     "HERO-02": { trust: "trust_biology", confirmed: "habitat_confirmed", verified: "habitat_verified" },
@@ -565,5 +676,6 @@
     freeEndingPaths: freeEndingPaths,
     homeVariant: homeVariant,
     Data: Data,
+    Comms: Comms,
   };
 });

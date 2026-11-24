@@ -67,6 +67,9 @@
     alertSig: "",
     pageCtrlSig: "",
     shellMounted: false,
+    storySelectedHero: null,
+    routeScrollPositions: new Map(),
+    pendingScrollRestore: null,
   };
   let sheetMounted = false;
   let eventsBound = false;
@@ -323,116 +326,161 @@
   function goRoute(action) {
     if (!StoryUi) return;
     const matchRef = store.match;
-    store.route = StoryUi.navigate(ensureRoute(), action);
-    store.pageSig = "";
-    if (store.match !== matchRef) {
-      showError("導航不應重建對局。");
+    const before = ensureRoute();
+    const page = document.getElementById("page-root");
+    if (page) store.routeScrollPositions.set(StoryUi.routeKey(before), page.scrollTop);
+    store.route = StoryUi.navigate(before, action);
+    // Only the Back action restores the previous reading position. Entering a new page starts at its top.
+    store.pendingScrollRestore = action && action.type === "back"
+      ? (store.routeScrollPositions.get(StoryUi.routeKey(store.route)) ?? 0)
+      : null;
+    // Opening hero details and returning to the same story is a reading detour:
+    // keep the step-1 hero selection and its scroll position intact.
+    const readingDetour = action && action.type === "open-hero" && before.page === "story";
+    const readingReturn = action && action.type === "back" && before.page === "hero" &&
+      store.route.page === "story" && store.route.nodeId === before.nodeId;
+    if (!readingDetour && !readingReturn &&
+        (store.route.page !== "story" || store.route.nodeId !== before.nodeId)) {
+      store.storySelectedHero = null;
     }
+    store.pageSig = "";
+    if (store.match !== matchRef) showError("導航不應重建對局。");
   }
 
-  function chromeFlags(state) {
+    function chromeFlags(state) {
     return assignFlags(state);
+  }
+
+  // Read the authoritative engine roster; no UI population constant.
+  function currentPopulation(state) {
+    const player = store.match && store.match.players && store.match.players[C.HUMAN_ID];
+    if (player && typeof Engine.roster === "function") return Engine.roster(player);
+    const you = state && state.you;
+    if (!you) return 0;
+    // Only a defensive display fallback before a match is attached.
+    return (you.standby || 0) + (you.recycle_workers || 0) +
+      (you.supply_workers || 0) + (you.duty_workers || 0) +
+      (you.patrols || 0) + (you.wards || 0) +
+      (you.training || 0) + (you.recalling || 0) +
+      (you.exploring ? 1 : 0) + (you.recovering ? 1 : 0);
+  }
+
+  function lastBattleSummary(state) {
+    const prior = store.match && store.match.last_battle;
+    const resolution = (prior && prior.resolution) ||
+      (state && state.battle && state.battle.resolved && state.battle.resolution);
+    if (!resolution) return "暫無已結算戰鬥。";
+    const map = { attack_win: "攻方勝出", defense_win: "守方勝出", draw: "平手" };
+    const n = (value) => Number.isFinite(Number(value)) ? Number(value) : 0;
+    return `上一場${map[resolution.outcome] || "戰鬥已結束"}。掠奪合金 ${n(resolution.loot_alloy)}、口糧 ${n(resolution.loot_rations)}。攻方傷亡 ${n(resolution.attacker_casualties)}、守方傷亡 ${n(resolution.defender_casualties)}（回待命）。`;
   }
 
   function hudMarkup(state) {
     const you = state.you;
     const paused = !!(store.manualPaused && state.phase === "playing");
+    const status = state.phase === "finished" ? "本局已結束" : (paused ? "已手動暫停" : "對局進行中 · 離頁會補算");
     return `
-      <div class="topline">
-        <div class="time"><span id="hud-time">${fmtTime(state.match_time)}</span><small>8 分鐘後先計勝　15 分鐘限時　單機　離開後會補算　讀故事唔會暫停對局</small></div>
-        <div class="pills">
-          <span class="pill on">${escapeHtml(you.display_name)}　你</span>
-          <span class="pill cpu">${escapeHtml(state.opponent ? state.opponent.display_name : "自動前哨")}　電腦</span>
+      <div class="compact-hud">
+        <div class="hud-primary">
+          <div class="hud-timer"><span class="hud-k">遊戲時間</span><strong id="hud-time">${fmtTime(state.match_time)}</strong></div>
+          <span class="hud-live-status" id="hud-status" role="status">${status}</span>
+          <div class="hud-pause-control">
+            ${paused ? `<button class="btn small" id="btn-resume" type="button">繼續</button>` : `<button class="btn small" id="btn-pause" type="button" ${state.phase === "playing" ? "" : "disabled"}>暫停</button>`}
+          </div>
         </div>
-      </div>
-      <div class="resources" id="hud-resources">
-        <div class="res food"><div class="k">口糧</div><div class="v" id="hud-rations">${you.rations}</div></div>
-        <div class="res alloy"><div class="k">合金</div><div class="v" id="hud-alloy">${you.alloy}</div></div>
-        <div class="res"><div class="k">待命船員</div><div class="v" id="hud-standby">${you.standby}</div></div>
-        <div class="res"><div class="k">巡衛${you.locked_patrols ? "（鎖 " + you.locked_patrols + "）" : ""}</div><div class="v" id="hud-patrols">${you.patrols}</div></div>
-        <div class="res"><div class="k">守陣${you.locked_wards ? "（鎖 " + you.locked_wards + "）" : ""}</div><div class="v" id="hud-wards">${you.wards || 0}</div></div>
-      </div>
-      <div class="hud-controls row">
-        ${paused && state.phase === "playing" ? `<button class="btn small" id="btn-resume" type="button">繼續</button>` : `<button class="btn small" id="btn-pause" type="button" ${state.phase === "playing" ? "" : "disabled"}>暫停</button>`}
-        <button class="btn small" id="btn-menu" type="button">返回首頁</button>
-        <button class="btn small" id="btn-new-ingame" type="button">重新開始</button>
+        <div class="hud-stats" aria-label="前哨資源及人口">
+          <span class="hud-stat">口糧 <strong id="hud-rations">${you.rations}</strong></span>
+          <span class="hud-stat">合金 <strong id="hud-alloy">${you.alloy}</strong></span>
+          <span class="hud-stat">人口 <strong id="hud-population">${currentPopulation(state)}</strong> <span class="hud-standby-label">（待命 <strong id="hud-standby">${you.standby}</strong>）</span></span>
+        </div>
+        <details class="hud-more">
+          <summary>兵力、對局說明與其他操作</summary>
+          <div class="hud-more-content">
+            <p>你：${escapeHtml(you.display_name)}　對手：${escapeHtml(state.opponent ? state.opponent.display_name : "自動前哨")}</p>
+            <p>巡衛 <strong id="hud-patrols">${you.patrols}</strong>${you.locked_patrols ? "（鎖 " + you.locked_patrols + "）" : ""}　守陣 <strong id="hud-wards">${you.wards || 0}</strong>${you.locked_wards ? "（鎖 " + you.locked_wards + "）" : ""}</p>
+            ${state.opponent ? `<p id="opp-line">對方：口糧 ${state.opponent.rations}　合金 ${state.opponent.alloy}　待命 ${state.opponent.standby}　巡衛 ${state.opponent.patrols}${state.opponent.locked_patrols ? "（鎖 " + state.opponent.locked_patrols + "）" : ""}　守陣 ${state.opponent.wards || 0}${state.opponent.locked_wards ? "（鎖 " + state.opponent.locked_wards + "）" : ""}。${state.opponent.protection_remaining > 0 ? "對方受襲保護 " + fmtTime(state.opponent.protection_remaining) : ""}</p>` : ""}
+            <details class="battle-history"><summary>上一場戰鬥：掠奪與傷亡</summary><p id="last-battle-summary">${escapeHtml(lastBattleSummary(state))}</p></details>
+            <p>第8分鐘後合金40可勝；最長15分鐘。閱讀故事不會暫停，只有手動暫停才停止計時；離頁後返回會補算。</p>
+            <div class="hud-secondary-actions">
+              <button class="btn small secondary" id="btn-menu" type="button">返回首頁</button>
+              <button class="btn small secondary" id="btn-new-ingame" type="button">重新開始</button>
+            </div>
+          </div>
+        </details>
       </div>`;
+  }
+
+    function resultDetailMarkup(state) {
+    const story = state.story || {};
+    if (!(state.phase === "finished" && state.result)) return "";
+    const kind = state.result.kind === "draw" ? "和局" : (state.result.you_won ? "你勝出" : "你敗咗");
+    let storyBox = "";
+    if (story.legacy_finished_unstarted || story.chapter_status === "unavailable") {
+      storyBox = `<section class="story-result"><h3>本局故事未啟用</h3>${(story.ending_text || []).map((p) => `<p>${escapeHtml(p)}</p>`).join("")}</section>`;
+    } else if (story.forced || story.ending_variant === "forced") {
+      storyBox = `<section class="story-result forced"><h3>故事未完成｜系統自動收束</h3>${(story.ending_text || []).map((p) => `<p>${escapeHtml(p)}</p>`).join("")}</section>`;
+    } else if (story.ending_id) {
+      storyBox = `<section class="story-result"><h3>故事結局：${escapeHtml(story.ending_title || story.ending_id)}</h3>${story.ending_variant && story.ending_variant !== "base" ? `<p>結局版本：${escapeHtml(story.ending_variant)}</p>` : ""}${(story.ending_text || []).map((p) => `<p>${escapeHtml(p)}</p>`).join("")}</section>`;
+    } else storyBox = `<p>尚未有故事結局。</p>`;
+    const comms = state.comms || {};
+    const commsStatus = comms.stage === 'completed'
+      ? (comms.outcome === 'located' ? '失聯隊位置已記錄，保留日後聯絡方向。' : '失聯隊於裂谷隱蔽，記錄已保存。') + (comms.variant === 'verified' ? '已驗證回波。' : '採用免費低功率記錄。')
+      : comms.stage === 'unavailable' ? '舊存檔：本局未啟用失聯隊通訊。'
+      : '通訊未完成，系統強制封存；不是玩家選擇。';
+    const you = state.you || {};
+    const facilityStatus = `補給棚${you.supply_built?'已建':'未建'}、整備艙${you.armory_built?'已建':'未建'}、深拆${you.recycle_upgraded?'已升級':'未升級'}、密植${you.supply_upgraded?'已升級':'未升級'}；${you.pressure_high?'艙壓過高':'艙壓正常'}。`;
+    const heroSummary = StoryUi && StoryUi.Data && state.story && state.story.assigned_hero
+      ? (StoryUi.Data.HEROES[state.story.assigned_hero] || {}).name + '的人格建議曾獲正式採用。'
+      : '三份人格檔案沒有獲正式指派；仍保留在前哨資料庫。';
+    storyBox += `<section class="comms-final-summary"><h3>失聯隊通訊</h3><p>${escapeHtml(commsStatus)}</p><h3>英雄與基地</h3><p>${escapeHtml(heroSummary)}</p><p>${escapeHtml(facilityStatus)}</p></section>`;
+    return `<section class="card full-final-result" id="full-final-result" tabindex="-1" aria-labelledby="final-result-title"><h2 id="final-result-title">戰局結果：${kind}</h2><p>${escapeHtml(state.result.reason)}</p>${storyBox}</section>`;
   }
 
   function alertMarkup(state) {
     const you = state.you;
-    const opp = state.opponent;
     const paused = !!(store.manualPaused && state.phase === "playing");
     const route = ensureRoute();
-    let pauseBanner = "";
-    if (paused) {
-      pauseBanner = `<div class="pause-banner" role="status"><strong>已手動暫停。</strong>呢段時間離開唔會補算。按「繼續」先再計時。閱讀故事仍然可以，但唔能提交未確認嘅故事選擇。</div>`;
-    } else if (state.phase === "playing") {
-      pauseBanner = `<div class="pause-banner" role="status"><strong>離開時對局繼續，返回後補算，可能戰敗。</strong>讀地圖或故事時對局照跑。唔保證手機系統喺背景真執行；最長補算到 15 分鐘終局。</div>`;
-    }
-    let banner = "";
+    const entry = StoryUi ? StoryUi.exploreEntry(state, route) : { visible: false };
+    const parts = [];
     if (state.phase === "finished" && state.result) {
       const kind = state.result.kind === "draw" ? "和局" : (state.result.you_won ? "你勝出" : "你敗咗");
-      const story = state.story || {};
-      let storyBox = "";
-      if (story.legacy_finished_unstarted || story.chapter_status === "unavailable") {
-        storyBox = `<div class="story-result"><strong>故事功能在當局未啟用。</strong>${(story.ending_text || []).map((p) => " " + escapeHtml(p)).join("")}</div>`;
-      } else if (story.forced || story.ending_variant === "forced") {
-        storyBox = `<div class="story-result forced" role="status"><strong>故事未完成｜系統自動收束</strong>${(story.ending_text || []).map((p) => `<p>${escapeHtml(p)}</p>`).join("")}</div>`;
-      } else if (story.ending_id) {
-        storyBox = `<div class="story-result"><strong>故事結局：${escapeHtml(story.ending_title || story.ending_id)}</strong>${story.ending_variant && story.ending_variant !== "base" ? "（" + escapeHtml(story.ending_variant) + "）" : ""}${(story.ending_text || []).map((p) => `<p>${escapeHtml(p)}</p>`).join("")}</div>`;
-      } else {
-        storyBox = `<div class="story-result"><strong>尚未有故事結局。</strong></div>`;
-      }
-      banner = `<div class="banner result" id="match-result-banner"><strong>戰局結果：${kind}。</strong> ${escapeHtml(state.result.reason)}${storyBox}${route.page !== "base" ? `<p class="assign-hint">終局結果在任何頁面都會顯示，可返回基地查看建設現況。</p>` : ""}</div>`;
+      // Keep the stable v0 test/UI selector on the compact finish notice;
+      // the long economic + story result remains in #full-final-result.
+      parts.push(`<div class="critical-notice final-notice" id="match-result-banner" role="status"><strong>戰局已結束：${kind}</strong><span class="final-short-reason">${escapeHtml(state.result.reason || "")}</span><button class="btn small" type="button" data-show-result="1">查看完整結局</button></div>`);
+    } else if (paused) {
+      parts.push(`<div class="critical-notice pause-notice" role="status">已手動暫停 · 離頁不補算</div>`);
     } else if (state.battle && !state.battle.resolved) {
-      const role = state.battle.you_attack ? "你出征中" : "你嘅前哨被攻打";
-      banner = `<div class="banner battle">${role}：攻 ${state.battle.attack_force} 對守 ${state.battle.defense_force}，約 ${fmtTime(state.battle.remaining)} 後結算。</div>`;
-    } else if (state.battle && state.battle.resolved && state.battle.resolution) {
-      const r = state.battle.resolution;
-      const map = { attack_win: "攻方勝", defense_win: "守方勝", draw: "打和" };
-      banner = `<div class="banner">上一場${map[r.outcome] || ""}。掠奪合金 ${r.loot_alloy}、口糧 ${r.loot_rations}。傷亡退回船員：攻 ${r.attacker_casualties}、守 ${r.defender_casualties}。</div>`;
+      const role = state.battle.you_attack ? "你出征中" : "前哨正遭攻打";
+      parts.push(`<div class="critical-notice danger-notice" role="status"><strong>${role}</strong> · 約 ${fmtTime(state.battle.remaining)} 後結算</div>`);
     }
-    const oppProt = opp && opp.protection_remaining > 0 ? `對方受襲保護 ${fmtTime(opp.protection_remaining)}` : "";
-    const oppLine = opp ? `<p class="muted opp-line" id="opp-line">對方：口糧 ${opp.rations}　合金 ${opp.alloy}　待命 ${opp.standby}　巡衛 ${opp.patrols}${opp.locked_patrols ? "（鎖 " + opp.locked_patrols + "）" : ""}　守陣 ${opp.wards || 0}${opp.locked_wards ? "（鎖 " + opp.locked_wards + "）" : ""}。${oppProt}</p>` : "";
-    let exploreAlert = "";
-    const entry = StoryUi ? StoryUi.exploreEntry(state, route) : { visible: false };
     if (entry.visible) {
-      if (entry.return_and_open) {
-        exploreAlert = `<div class="choice-entry explore-alert" role="status">
-          <p class="assign-status">探索事件「${escapeHtml(entry.title)}」尚餘 <span id="explore-remain">${fmtTime(entry.remain)}</span>，逾時走穩妥路線。故事頁不會吞掉呢個入口。</p>
-          <button class="btn" type="button" data-return-explore="1">返回基地並打開抉擇</button>
-        </div>`;
-      } else {
-        exploreAlert = `<div class="choice-entry explore-alert" role="status">
-          <p class="assign-status">探索已到達：「${escapeHtml(entry.title)}」。尚餘 <span id="explore-remain">${fmtTime(entry.remain)}</span> 要揀，逾時走穩妥路線。</p>
-          <button class="btn" type="button" data-open-choice="1">打開抉擇</button>
-        </div>`;
-      }
+      parts.push(`<div class="choice-entry explore-alert critical-notice" role="status"><span>探索抉擇：「${escapeHtml(entry.title)}」· 尚餘 <strong id="explore-remain">${fmtTime(entry.remain)}</strong>，逾時選A</span><button class="btn" type="button" ${entry.return_and_open ? 'data-return-explore="1"' : 'data-open-choice="1"'}>${entry.return_and_open ? "返回基地並選擇" : "打開抉擇"}</button></div>`);
     }
-    return `${pauseBanner}${banner}${errorBlock()}${oppLine}${exploreAlert}`;
+    if (store.error) parts.push(errorBlock());
+    return parts.join("");
   }
 
-  function navMarkup(state) {
+    function navMarkup(state) {
     const route = ensureRoute();
-    return `
-      <nav class="bottom-nav" aria-label="主要頁面">
-        <button class="nav-btn ${route.tab === "base" ? "on" : ""}" type="button" data-nav-tab="base">基地</button>
-        <button class="nav-btn ${route.tab === "map" ? "on" : ""}" type="button" data-nav-tab="map">地圖</button>
-        <button class="nav-btn ${route.tab === "log" ? "on" : ""}" type="button" data-nav-tab="log">紀錄</button>
-      </nav>`;
+    return `<nav class="bottom-nav" aria-label="主要頁面">
+      <button class="nav-btn ${route.tab === "base" ? "on" : ""}" ${route.tab === "base" ? 'aria-current="page"' : ""} type="button" data-nav-tab="base">基地</button>
+      <button class="nav-btn ${route.tab === "map" ? "on" : ""}" ${route.tab === "map" ? 'aria-current="page"' : ""} type="button" data-nav-tab="map">地圖</button>
+      <button class="nav-btn ${route.tab === "log" ? "on" : ""}" ${route.tab === "log" ? 'aria-current="page"' : ""} type="button" data-nav-tab="log">紀錄</button>
+    </nav>`;
   }
 
   function backRow(route) {
     if (!route || route.page === "base") return "";
-    const backToMap = route.page === "location" || route.page === "story" || route.page === "hero";
+    const backDest = route.stack && route.stack.length ? route.stack[route.stack.length - 1].page : (route.page === "map" || route.page === "log" ? "base" : "map");
+    const labels = { base: "基地", map: "地圖", location: "地點", story: "故事", hero: "英雄詳情", log: "紀錄" };
+    const backLabel = labels[backDest] || "上一層";
     return `<div class="back-row">
-      ${backToMap ? `<button class="btn small" type="button" data-nav-back="1">返回地圖</button>` : ""}
-      <button class="btn small secondary" type="button" data-nav-tab="base">返回基地</button>
+      <button class="btn small" type="button" data-nav-back="1" aria-label="返回${backLabel}">返回${backLabel}</button>
+      ${backDest !== "base" ? `<button class="btn small secondary" type="button" data-nav-tab="base">返回基地</button>` : ""}
     </div>`;
   }
 
-  function paras(lines) {
+    function paras(lines) {
     return (lines || []).map((p) => `<p class="story-p">${escapeHtml(p)}</p>`).join("");
   }
 
@@ -443,6 +491,59 @@
       const rel = (story && story.relation && story.relation[h.relation_key]) || 0;
       return `<button class="hero-chip" type="button" data-open-hero="${h.id}">${escapeHtml(h.name)}　關係 ${rel}</button>`;
     }).join("")}</div>`;
+  }
+
+  function commsPanel(state) {
+    const c = state.comms;
+    if (!c) return '';
+    const blocked = state.phase !== 'playing' || store.manualPaused || (store.clock && store.clock.paused);
+    const time = c.remaining == null ? '' : `約 <strong id="comms-countdown">${fmtTime(c.remaining)}</strong> 後回覆`;
+    let text = '';
+    let choices = '';
+    if (c.stage === 'waiting_first') text = `指揮艙收到失聯探索隊「碎光小隊」的斷續呼號，正在校準頻道。${time}。`;
+    else if (c.stage === 'choice_one') {
+      text = '第一段回覆｜隊員伊珞：「我們被落石隔在地底，北面還有一處低功率發射塔。你要我們走開闊的碎石脊，還是躲進裂谷？」';
+      choices = `<button class="btn story-option" type="button" data-comms-choice="COMMS-RIDGE" ${blocked?'disabled':''}>引導前往碎石脊｜較容易定位（免費）</button>
+        <button class="btn story-option" type="button" data-comms-choice="COMMS-QUIET" ${blocked?'disabled':''}>讓隊員進入裂谷｜保留隱蔽（免費）</button>`;
+    } else if (c.stage === 'waiting_second') text = `隊員按你的指示移動；電波穿過岩層時斷斷續續。${time}。`;
+    else if (c.stage === 'choice_two') {
+      text = `第二段回覆｜伊珞：「我們抵達舊訊號碑。低功率回覆足夠傳送記錄，但若修復增幅片，會留下更完整的證據。」${c.clue?'你之前的短探索提供了岩層回聲線索。':'暫無短探索的額外岩層線索，仍可免費繼續。'}`;
+      choices = `<button class="btn story-option" type="button" data-comms-choice="COMMS-FREE" ${blocked?'disabled':''}>保持低功率回覆｜免費完成</button>
+        <button class="btn story-option" type="button" data-comms-choice="COMMS-BOOST" ${blocked || state.you.alloy<2?'disabled':''}>修復增幅片｜消耗2合金（驗證版）</button>
+        ${state.you.alloy<2?'<p class="assign-hint">合金不足仍可選免費回覆。</p>':''}`;
+    } else if (c.stage === 'waiting_third') text = `第三段回覆正在穿過干擾區。${time}。你仍可返回基地管理前哨。`;
+    else if (c.stage === 'completed') text = c.outcome === 'located'
+      ? `已收到第三段回覆｜「碎光小隊」成功將位置標記在安全航圖上；${c.variant==='verified'?'增幅回波也留下可核對的完整證據。':'使用低功率記錄，沒有額外花費。'}這些遠方隊員不會加入本局六名船員。`
+      : `已收到第三段回覆｜隊員決定在裂谷內隱蔽，電台保留返航方向；${c.variant==='verified'?'增幅記錄確認了附近的地形。':'低功率訊號已足夠保存足跡。'}他們不加入本局六名船員。`;
+    else if (c.stage === 'forced') text = '對局先行結束。通訊由系統標記為「未完成／失聯」，不是玩家選擇的結果。';
+    else text = '這份舊對局於通訊功能推出前結束；本局未啟用失聯隊通訊。';
+    return `<section class="card comms-card" id="comms-panel" aria-label="失聯探索隊通訊">
+      <div class="comms-head"><h2>失聯隊電台</h2><span class="tag">回覆 ${c.replies.length}／3</span></div>
+      <p class="desc">同一局遊戲時間的三次短回覆；不是20秒探索事件，閱讀不會自動暫停。</p>
+      <p class="comms-message">${text}</p>
+      <p class="assign-hint">${escapeHtml(c.advice || '')}</p>
+      ${choices?`<div class="comms-options">${choices}</div>`:''}
+    </section>`;
+  }
+
+  function guidePanel(state) {
+    const c=state.comms;
+    if (!c || !c.guide || c.stage==='unavailable') return '';
+    const rows=[['assign','調派至少1位船員到回收廠'],['build','建造任一設施（使用原本合金成本）'],['explore','派出一次原有短探索']];
+    return `<details class="card guide-panel"><summary>新手小任務（可略過、不派獎勵）</summary>
+      <p class="desc">配合失聯隊通訊的三個基地操作提示。可自行完成，也可以全部略過。</p>
+      ${rows.map(([id,label])=>`<div class="guide-row"><span>${escapeHtml(label)}：${c.guide[id]==='done'?'已完成':c.guide[id]==='skipped'?'已略過':'未完成'}</span>${c.guide[id]==='pending'?`<button class="btn small" type="button" data-guide-skip="${id}" ${state.phase!=='playing'||store.manualPaused?'disabled':''}>略過</button>`:''}</div>`).join('')}
+      <button class="btn secondary" type="button" data-guide-skip="all" ${state.phase!=='playing'||store.manualPaused?'disabled':''}>略過所有未完成小任務</button>
+    </details>`;
+  }
+
+  function baseSignal(state) {
+    const c=state.comms; if (!c) return '';
+    const signal = c.stage==='completed'?'通訊已結束':c.stage==='forced'?'通訊由系統收束':c.stage==='choice_one'||c.stage==='choice_two'?'有待回覆的失聯隊訊息':'失聯隊訊號接收中';
+    const you=state.you;
+    const facilities=`補給棚${you.supply_built?'已建':'未建'} · 整備艙${you.armory_built?'已建':'未建'} · 深拆${you.recycle_upgraded?'已升級':'未升級'} · 密植${you.supply_upgraded?'已升級':'未升級'}`;
+    const danger=you.pressure_high?'艙壓過高':state.battle&&!state.battle.resolved?'戰鬥進行中':you.protection_remaining>0?'保護期內':'艙壓／防線目前未見緊急警示';
+    return `<section class="card base-telemetry" aria-label="基地與電台狀態"><h2>基地與失聯訊號</h2><p class="desc">${escapeHtml(facilities)}</p><p class="assign-status">${escapeHtml(danger)} · ${escapeHtml(signal)}</p><button class="btn small" type="button" data-open-comms="1">查看電台與地圖</button></section>`;
   }
 
   function mapPageMarkup(state) {
@@ -462,6 +563,7 @@
       </button>`;
     }).join("");
     return `${backRow(ensureRoute())}
+      ${commsPanel(state)}
       <section class="card">
         <h2>星球地圖</h2>
         <p class="desc">呢張地圖只有三個固定故事地點，唔會派船員、亦唔用 20 秒探索倒數。原有探索仍喺基地進行。</p>
@@ -504,11 +606,26 @@
       const c = Data.choiceById(id);
       return c && c.node_id === node.id;
     });
-    const optionBtns = choices.map((ch) => {
-      const cost = ch.cost_alloy > 0 ? `<span class="cost-note">消耗${ch.cost_alloy}合金</span>` : "";
+    const renderChoice = (ch) => {
+      const cost = ch.cost_alloy > 0 ? `<span class="cost-note">消耗${ch.cost_alloy}合金</span>` : `<span class="cost-note free-cost">免費</span>`;
       const why = !ch.enabled && ch.reason ? `<span class="option-reason">${escapeHtml(ch.reason)}</span>` : (ch.stance_change ? `<span class="option-reason">將改變立場，原英雄專屬解析會放棄。</span>` : "");
       return `<button class="btn story-option ${ch.enabled ? "" : "is-locked"}" type="button" data-story-choice="${ch.id}" ${ch.enabled && !flags.paused && !flags.finished ? "" : "disabled"}>${escapeHtml(ch.label)} ${cost}${why}</button>`;
-    }).join("");
+    };
+    let optionBtns = choices.map(renderChoice).join("");
+    if (node.id === "STORY-02" && choices.length) {
+      const heroes = Data.heroList();
+      const chosenHero = store.storySelectedHero;
+      if (chosenHero && heroes.some((h) => h.id === chosenHero)) {
+        const hero = Data.HEROES[chosenHero];
+        optionBtns = `<div class="story-step-head"><span class="story-step-number">步驟 2／2</span><h3>${escapeHtml(hero.name)} · 選擇解讀方式</h3><button class="btn small secondary" type="button" data-story-hero-back="1">更換英雄</button></div>
+          <p class="story-step-description">免費解讀也可到達完整故事結局；深入解碼消耗2合金，只解鎖已驗證的線索和結局版本。</p>
+          ${choices.filter((ch) => ch.hero_id === chosenHero).map(renderChoice).join("")}`;
+      } else {
+        optionBtns = `<div class="story-step-head"><span class="story-step-number">步驟 1／2</span><h3>選擇一位正式指派的英雄</h3></div>
+          <p class="story-step-description">本章只能指派一位英雄。可以改變第一幕的立場；選好英雄後再決定免費或花2合金解讀。</p>
+          ${heroes.map((h) => `<button class="btn story-option hero-select-option" type="button" data-story-select-hero="${h.id}">${escapeHtml(h.name)}<span class="option-reason">${escapeHtml(h.role)} ·  查看解讀方式</span></button>`).join("")}`;
+      }
+    }
     let status = "";
     if (!unlocked) status = `<p class="assign-hint">需要先完成上一幕。</p>`;
     else if (resolved) status = `<p class="assign-status">呢一幕已確認：${escapeHtml(chosen[0] || "已選擇")}。返回唔會撤銷。</p>`;
@@ -560,6 +677,7 @@
     else if (story.forced || story.ending_variant === "forced") ending = "故事未完成，系統自動收束。";
     else if (story.ending_id) ending = (story.ending_title || story.ending_id) + (story.ending_variant && story.ending_variant !== "base" ? "（" + story.ending_variant + "）" : "");
     return `${backRow(ensureRoute())}
+      ${commsPanel(state)}
       <section class="card">
         <h2>故事紀錄</h2>
         <p class="assign-status">璃棱 ${rel.liling || 0}　秋纓 ${rel.qiuying || 0}　烏燼 ${rel.wujin || 0}</p>
@@ -568,6 +686,7 @@
       </section>
       <section class="card">
         <h2 class="log-heading">最近戰況</h2>
+        <details class="battle-history"><summary>上一場戰鬥：掠奪與攻守傷亡</summary><p>${escapeHtml(lastBattleSummary(state))}</p></details>
         <ul class="log">${events || "<li>尚未有新事件。</li>"}</ul>
       </section>`;
   }
@@ -634,6 +753,8 @@
     const events = (state.events || []).slice().reverse().slice(0, 8)
       .map((ev) => `<li>${escapeHtml(ev.text)}</li>`).join("");
     return `
+      ${baseSignal(state)}
+      ${guidePanel(state)}
       ${facCard("指揮艙", "保護底線、值守艙壓、派出探索。", commandBody, "command")}
       ${facCard("回收廠", "從殘骸拆合金。", recycleBody, "recycle")}
       ${facCard("補給棚", "種植與過濾口糧。", supplyBody, "supply")}
@@ -651,12 +772,14 @@
 
   function pageMarkup(state) {
     const route = ensureRoute();
-    if (route.page === "map") return mapPageMarkup(state);
-    if (route.page === "location") return locationPageMarkup(state);
-    if (route.page === "story") return storyPageMarkup(state);
-    if (route.page === "hero") return heroPageMarkup(state);
-    if (route.page === "log") return logPageMarkup(state);
-    return basePageMarkup(state);
+    let content;
+    if (route.page === "map") content = mapPageMarkup(state);
+    else if (route.page === "location") content = locationPageMarkup(state);
+    else if (route.page === "story") content = storyPageMarkup(state);
+    else if (route.page === "hero") content = heroPageMarkup(state);
+    else if (route.page === "log") content = logPageMarkup(state);
+    else content = basePageMarkup(state);
+    return resultDetailMarkup(state) + content;
   }
 
   function mountGameShell(state) {
@@ -693,6 +816,8 @@
     nav.querySelectorAll("[data-nav-tab]").forEach((btn) => {
       const on = btn.getAttribute("data-nav-tab") === route.tab;
       btn.classList.toggle("on", on);
+      if (on) btn.setAttribute("aria-current", "page");
+      else btn.removeAttribute("aria-current");
     });
     store.navSig = StoryUi ? StoryUi.navSignature(route) : store.navSig;
   }
@@ -724,11 +849,15 @@
       setText("hud-rations", String(you.rations));
       setText("hud-alloy", String(you.alloy));
       setText("hud-standby", String(you.standby));
+      setText("hud-population", String(currentPopulation(state)));
+      setText("last-battle-summary", lastBattleSummary(state));
       setText("hud-patrols", String(you.patrols));
       setText("hud-wards", String(you.wards || 0));
+      setText("hud-status", state.phase === "finished" ? "本局已結束" : (store.manualPaused ? "已手動暫停" : "對局進行中 · 離頁會補算"));
     }
     const entry = StoryUi ? StoryUi.exploreEntry(state, ensureRoute()) : null;
     if (entry && entry.visible) setText("explore-remain", fmtTime(entry.remain));
+    if (state.comms && state.comms.remaining != null) setText("comms-countdown", fmtTime(state.comms.remaining));
     const opp = state && state.opponent;
     const oppLine = document.getElementById("opp-line");
     if (oppLine && opp) {
@@ -803,7 +932,10 @@
     if (plan.rebuildPage) {
       const y = page.scrollTop;
       page.innerHTML = pageMarkup(state);
-      if (sameRoute && !opts.resetScroll) page.scrollTop = y;
+      if (store.pendingScrollRestore != null) {
+        page.scrollTop = store.pendingScrollRestore;
+        store.pendingScrollRestore = null;
+      } else if (sameRoute && !opts.resetScroll) page.scrollTop = y;
       else page.scrollTop = 0;
       rebuiltPage = true;
     }
@@ -875,10 +1007,25 @@
           </div>
         </div>`;
     }
+    if (sheet.kind === 'comms') {
+      const before = stateNow() && stateNow().you ? stateNow().you.alloy : 0;
+      const after = before - sheet.cost_alloy;
+      return `<div class="sheet" id="sheet"><div class="card">
+        <h2>確認失聯隊通訊回覆</h2><p class="assign-status">${escapeHtml(sheet.label)}</p>
+        <p class="desc">回覆會決定失聯隊後續路線；確認後不可撤回。這是局內遊戲合金，不是真實付款。</p>
+        <div class="alloy-preview"><span>目前合金 <strong>${before}</strong></span><span aria-hidden="true">→</span><span>確認後 <strong>${after}</strong></span></div>
+        ${sheet.cost_alloy && before < sheet.cost_alloy ? '<p class="assign-hint">合金不足，可返回選擇免費回覆。</p>' : ''}
+        ${err}<button class="btn" id="sheet-ok" type="button" ${before < sheet.cost_alloy?'disabled':''}>確認回覆</button>
+        <button class="btn secondary" id="sheet-cancel" type="button">返回電台</button>
+      </div></div>`;
+    }
     if (sheet.kind === "story") {
       const costLine = sheet.cost_alloy > 0
         ? `<p class="cost-note">此選擇將消耗${sheet.cost_alloy}合金。這是遊戲內資源，不是付款或購買。</p>`
         : `<p class="desc">此選擇不消耗口糧或合金，但仍會永久改變故事方向。</p>`;
+      const currentAlloy = stateNow() && stateNow().you ? stateNow().you.alloy : 0;
+      const afterAlloy = currentAlloy - (sheet.cost_alloy || 0);
+      const alloyPreview = `<div class="alloy-preview" aria-label="合金扣費預覽"><span>目前合金 <strong id="story-alloy-before">${currentAlloy}</strong></span><span aria-hidden="true">→</span><span>確認後 <strong id="story-alloy-after">${afterAlloy}</strong></span></div>`;
       const stance = sheet.stance_change
         ? `<p class="assign-hint">改變立場後，原英雄的專屬解析機會將永久放棄。</p>`
         : "";
@@ -889,6 +1036,7 @@
             <p class="assign-status">${escapeHtml(sheet.label || "")}</p>
             <p class="desc">此選擇不可逆。確認後不能用重試、連按或重新載入撤回旗標或重複扣資源。</p>
             ${costLine}
+            ${alloyPreview}
             ${stance}
             ${err}
             <button class="btn" id="sheet-ok" type="button">確認提交</button>
@@ -954,6 +1102,14 @@
     if (rp && store.sheet) rp.textContent = String(store.sheet.patrol || 0);
     const rw = document.getElementById("raid-ward-val");
     if (rw && store.sheet) rw.textContent = String(store.sheet.ward || 0);
+    if (store.sheet && store.sheet.kind === "story") {
+      const st = stateNow();
+      const alloy = st && st.you ? st.you.alloy : 0;
+      const before = document.getElementById("story-alloy-before");
+      const after = document.getElementById("story-alloy-after");
+      if (before) before.textContent = String(alloy);
+      if (after) after.textContent = String(alloy - (store.sheet.cost_alloy || 0));
+    }
     const err = document.getElementById("sheet-err");
     if (err) err.textContent = store.error || "";
     const remain = document.getElementById("choice-remain");
@@ -1021,7 +1177,7 @@
       return false;
     }
     store.busy = true;
-    const transactional = payload.type === "story_choice";
+    const transactional = payload.type === "story_choice" || payload.type === "comms_choice" || payload.type === "guide_skip";
     let checkpoint = null;
     try {
       if (!payload.command_id) payload.command_id = cmdId();
@@ -1061,6 +1217,19 @@
     if (kind === "choice") return;
     const st = stateNow();
     const flags = assignFlags(st);
+    if (kind === 'comms') {
+      const c = st && st.comms;
+      const expected = submitted.stage;
+      if (!c || c.stage !== expected || st.phase !== 'playing' || flags.paused) {
+        showError('通訊階段已更新，請返回電台查看。');
+        store.sheet = null; unmountSheet(); render(); return;
+      }
+      const success = sendCommand({type:'comms_choice',choice_id:submitted.choice_id},{keepSheet:true});
+      if (store.sheet !== submitted) return;
+      if (success) { store.sheet=null; unmountSheet(); renderGame({forcePage:true}); }
+      else renderSheet();
+      return;
+    }
     if (kind === "story") {
       const resolved = StoryUi.storySubmit(store.sheet, st, flags);
       if (!resolved.ok) {
@@ -1228,6 +1397,11 @@
       }
       if (btn.id === "btn-pause") { pauseGame("manual"); renderGame({ forceHud: true, forceAlerts: true, forceNav: false, forcePage: false }); return; }
       if (btn.id === "btn-resume") { resumeGame(); renderGame({ forceHud: true, forceAlerts: true, forceNav: false, forcePage: false }); return; }
+      if (btn.dataset.openComms) {
+        goRoute({type:'tab',tab:'map'});
+        renderGame({forcePage:true,forceAlerts:true,resetScroll:true});
+        return;
+      }
       if (btn.dataset.navTab) {
         goRoute({ type: btn.dataset.navTab === "base" ? "return-base" : "tab", tab: btn.dataset.navTab });
         renderGame({ forcePage: true, forceNav: false, forceHud: false, forceAlerts: true, resetScroll: true });
@@ -1257,6 +1431,35 @@
         goRoute({ type: "return-base" });
         renderGame({ forcePage: true, forceChrome: true, resetScroll: true });
         openSheet("choice");
+        return;
+      }
+      if (btn.dataset.commsChoice) {
+        const id = btn.dataset.commsChoice;
+        const st = stateNow();
+        const c = st && st.comms;
+        if (!c || st.phase !== 'playing' || store.manualPaused) return;
+        const valid = (c.stage === 'choice_one' && (id === 'COMMS-RIDGE' || id === 'COMMS-QUIET')) ||
+          (c.stage === 'choice_two' && (id === 'COMMS-FREE' || id === 'COMMS-BOOST'));
+        if (!valid) return;
+        store.sheet = {kind:'comms',stage:c.stage,choice_id:id,cost_alloy:id==='COMMS-BOOST'?2:0,
+          label: ({'COMMS-RIDGE':'引導小隊走碎石脊','COMMS-QUIET':'讓小隊躲進裂谷','COMMS-FREE':'以低功率免費回覆','COMMS-BOOST':'耗2合金修復增幅片'})[id]};
+        sheetMounted=false; renderSheet(); return;
+      }
+      if (btn.dataset.guideSkip) { sendCommand({type:'guide_skip',task:btn.dataset.guideSkip}); return; }
+      if (btn.dataset.storySelectHero) {
+        if (!StoryUi.Data.HEROES[btn.dataset.storySelectHero]) return;
+        store.storySelectedHero = btn.dataset.storySelectHero;
+        renderGame({ forcePage: true });
+        return;
+      }
+      if (btn.dataset.storyHeroBack) {
+        store.storySelectedHero = null;
+        renderGame({ forcePage: true });
+        return;
+      }
+      if (btn.dataset.showResult) {
+        const page = document.getElementById("page-root");
+        if (page) { page.scrollTop = 0; const result = document.getElementById("full-final-result"); if (result) result.focus({ preventScroll: true }); }
         return;
       }
       if (btn.dataset.storyChoice) {

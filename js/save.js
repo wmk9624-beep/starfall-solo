@@ -206,6 +206,10 @@
     var ai = m.players[C.AI_ID];
     if (data.expansion_schema !== 1) throw new Error("擴充版本標記無效。");
     validateStory(data);
+    if (data.comms_schema !== 1 || !Object.prototype.hasOwnProperty.call(data,'comms')) throw Error('新通訊存檔缺欄位。');
+    Engine.Comms.validate(data.comms);
+    if (m.phase === 'finished' && ['completed','forced','unavailable'].indexOf(data.comms.stage) < 0) throw Error('終局通訊未收束。');
+    if (m.phase === 'playing' && ['forced','unavailable'].indexOf(data.comms.stage) >= 0) throw Error('進行中對局不得有終局通訊標記。');
     if (pending) {
       var atk = m.players[pending.attacker_id];
       var dfn = m.players[pending.defender_id];
@@ -259,6 +263,7 @@
       if (Engine.StoryEngine && typeof Engine.StoryEngine.migrateSnapshot === "function") {
         data = Engine.StoryEngine.migrateSnapshot(data);
       }
+      data = Engine.Comms.migrate(data);
       validateSnapshot(data);
       return { ok: true, empty: false, data: data, raw: raw };
     } catch (err) {
@@ -281,6 +286,7 @@
     if (Engine.StoryEngine && typeof Engine.StoryEngine.migrateSnapshot === "function") {
       data = Engine.StoryEngine.migrateSnapshot(data);
     }
+    data = Engine.Comms.migrate(data);
     validateSnapshot(data);
     writeRaw(storage, JSON.stringify(data));
     return { ok: true };

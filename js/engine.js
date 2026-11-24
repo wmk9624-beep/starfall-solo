@@ -9,6 +9,8 @@
   "use strict";
   if (!Events) throw new Error("缺少探索事件表。");
   if (!StoryEngine) throw new Error("缺少故事規則模組。");
+  var Comms = StoryEngine.Comms;
+  if (!Comms) throw new Error("缺少通訊模組。");
 
   var C = {
     START_RATIONS: 20,
@@ -316,6 +318,7 @@
     this.event_seq = 0;
     this.mode = "solo";
     this.story = StoryEngine.createState();
+    this.comms = Comms.createState(0);
   }
 
   Match.prototype.playerList = function () {
@@ -341,6 +344,7 @@
     this.phase = "playing";
     this.started_at = now;
     this.story = StoryEngine.createState();
+    this.comms = Comms.createState(now);
     this.log(now, "倖存者同自動前哨同時降落殘艙。單機對局開始計時（只計前景時間）。", "sys");
     return this;
   };
@@ -369,6 +373,7 @@
         addTime(p.pending_choice.deadline_at);
       }
     }
+    if (this.comms && this.comms.next_at != null && leq(this.comms.next_at, now)) addTime(this.comms.next_at);
     var list = this.playerList();
     for (var i = 0; i < list.length; i++) enqueuePlayerTimes(list[i]);
     if (this.battle && !this.battle.resolved && leq(this.battle.resolves_at, now)) {
@@ -392,6 +397,7 @@
       var t = ordered[0];
       appliedAt[String(t)] = true;
       this._applyBatch(t);
+      if (this.comms && Comms.arrive(this.comms, t)) this.log(t, "失聯隊電台收到新一段訊息。", "info");
       this._checkVictory(t);
       this.playerList().forEach(enqueuePlayerTimes);
       if (this.battle && !this.battle.resolved && leq(this.battle.resolves_at, now)) {
@@ -526,6 +532,10 @@
     }
     var how = reason === "timeout" ? "逾時採用穩妥路線。" : ("選擇咗" + (option === "B" ? "冒險" : "穩妥") + "路線。");
     var opt = option === "B" ? ev.optionB : ev.optionA;
+    if (player.player_id === C.HUMAN_ID && this.comms && !this.comms.clue) {
+      this.comms.clue = true;
+      this.log(t, "探索紀錄為失聯隊電台補足一段地形線索。", "info");
+    }
     this.log(t, player.display_name + how + opt.detail + (recover ? "" : ""), "explore");
     return { option: option, event_id: ev.id, recover: recover };
   };
@@ -669,6 +679,7 @@
     this.phase = "finished";
     this.result = { kind: "win", winner_id: winner.player_id, reason: reason, finished_at: t };
     this.story = StoryEngine.closeIfUnfinished(this.story, t);
+    Comms.forceClose(this.comms);
     this.log(t, "對局結束：" + winner.display_name + "勝出。" + reason + "。", "result");
   };
 
@@ -676,6 +687,7 @@
     this.phase = "finished";
     this.result = { kind: "draw", winner_id: null, reason: reason, finished_at: t };
     this.story = StoryEngine.closeIfUnfinished(this.story, t);
+    Comms.forceClose(this.comms);
     this.log(t, "對局結束：和局。" + reason + "。", "result");
   };
 
@@ -707,9 +719,12 @@
     else if (typ === "explore") result = this._cmdExplore(player, payload, now);
     else if (typ === "choose") result = this._cmdChoose(player, payload, now);
     else if (typ === "story_choice") result = this._cmdStoryChoice(player, payload, now);
+    else if (typ === "comms_choice") result = this._cmdCommsChoice(player, payload, now);
+    else if (typ === "guide_skip") result = this._cmdGuideSkip(player, payload, now);
     else throw new CommandError("唔識呢種指令。", "bad_request");
 
     var wrapped = Object.assign({ ok: true, command_id: commandId }, result);
+    if (playerId === C.HUMAN_ID) Comms.observeAction(this.comms, typ, payload);
     this.processed_commands[dedupKey] = wrapped;
     this.advance(now);
     return clone(wrapped);
@@ -1131,6 +1146,27 @@
     };
   };
 
+  Match.prototype._cmdCommsChoice = function (player, payload, now) {
+    if (player.player_id !== C.HUMAN_ID) throw new CommandError("通訊僅限玩家。", "unauthorized");
+    var next = clone(this.comms);
+    var cost;
+    try { cost = Comms.choice(next, payload && payload.choice_id, now, player.alloy); Comms.validate(next); }
+    catch (err) { throw new CommandError(err.message || "通訊選擇無效。", "bad_request"); }
+    player.alloy -= cost;
+    this.comms = next;
+    this.log(now, "向失聯隊傳送回覆。", "info");
+    return {comms:Comms.view(this.comms, now), alloy_delta:-cost};
+  };
+
+  Match.prototype._cmdGuideSkip = function (player, payload) {
+    if (player.player_id !== C.HUMAN_ID) throw new CommandError("引導僅限玩家。", "unauthorized");
+    var task = payload && payload.task;
+    if (task !== 'all' && ['assign','build','explore'].indexOf(task) < 0) throw new CommandError("引導任務無效。", "bad_request");
+    var list = task === 'all' ? ['assign','build','explore'] : [task];
+    for (var i=0;i<list.length;i++) if (this.comms.guide[list[i]] === 'pending') this.comms.guide[list[i]]='skipped';
+    return {guide:clone(this.comms.guide)};
+  };
+
   Match.prototype.publicView = function (viewerId, now) {
     if (now == null) now = this.clock.now();
     this.advance(now);
@@ -1191,6 +1227,7 @@
       explore: { can: exploreReason == null, reason: exploreReason },
       paused: !!(this.clock && this.clock.paused),
       story: StoryEngine.view(this.story),
+      comms: Comms.view(this.comms, now, this.story),
     };
   };
 
@@ -1202,6 +1239,8 @@
       expansion_schema: 1,
       story_schema: 1,
       story: this.story ? clone(this.story) : StoryEngine.createState(),
+      comms_schema: 1,
+      comms: clone(this.comms),
       clock: this.clock.now(),
       paused: extra.paused != null ? !!extra.paused : !!(this.clock && this.clock.paused),
       ui_route: extra.ui_route != null ? clone(extra.ui_route) : null,
@@ -1238,6 +1277,7 @@
     m.events = data.events ? clone(data.events) : [];
     m.event_seq = data.event_seq || 0;
     m.players = data.players ? clone(data.players) : {};
+    m.comms = snap.comms ? clone(snap.comms) : Comms.createState(data.started_at || 0);
     if (snap.story) m.story = clone(snap.story);
     else m.story = StoryEngine.createState();
     if (typeof clock.set === "function") clock.set(snap.clock);
@@ -1365,5 +1405,6 @@
     Events: Events,
     EXPANSION_DEFAULTS: EXPANSION_DEFAULTS,
     StoryEngine: StoryEngine,
+    Comms: Comms,
   };
 });

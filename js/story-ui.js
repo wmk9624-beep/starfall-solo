@@ -269,7 +269,10 @@
       raid.can ? 1 : 0,
       story && story.story_revision,
       story && story.current_node,
-      story && story.ending_id
+      story && story.ending_id,
+      state && state.comms && state.comms.stage,
+      state && state.comms && state.comms.clue,
+      state && state.comms && state.comms.guide && [state.comms.guide.assign,state.comms.guide.build,state.comms.guide.explore].join(",")
     ].join("|");
   }
 
