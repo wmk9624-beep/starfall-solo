@@ -33,7 +33,7 @@
     '<span class="outpost-eyebrow">OUTPOST · PROLOGUE '+(state.intro+1)+'/4</span><h1>墜星前哨：最後的求救</h1>'+
     '<p class="outpost-intro-text">'+escapeHtml(INTRO[state.intro])+'</p>'+error()+
     (state.intro<INTRO.length-1?'<button class="btn" type="button" data-o-action="intro-next">繼續閱讀</button>':
-      '<button class="btn" type="button" data-o-action="enter">進入前哨（建立獨立存檔）</button>')+
+      '<p class="outpost-first-step">開始後可先派回收廠工人，或合金足夠時建補給棚。設施、物資及人口缺口會跨外拓保留；切頁或離開不等於暫停，未暫停返回可能補算。</p><button class="btn" type="button" data-o-action="enter">進入前哨（建立獨立存檔）</button>')+
     '<p class="outpost-muted">背景閱讀期間不計時、不建立存檔、不自動派遣。</p>'+link()+'</div></section>';}
   function renderEntry(){const loaded=O.load(window.localStorage);
     if(!loaded.ok){state.screen='invalid';state.app.innerHTML='<div class="outpost-entry card"><h1>無法讀取前哨</h1><p role="alert">'+escapeHtml(loaded.error)+'</p><p>原始存檔未被刪除或修改。請先保留備份，再檢查資料。</p>'+link()+'</div>';return;}
@@ -52,15 +52,15 @@
     const ready=v.hero.phase==='ready'&&state.tab!=='radio';
     const report=!!v.last_report&&state.tab!=='expedition';
     const hint=v.hero.phase==='hint';
-    const radio=ready?'<button class="outpost-alert-link" type="button" data-o-action="tab" data-o-tab="radio">前往電台回覆</button>':'';
-    const result=report?'<button class="outpost-alert-link" type="button" data-o-action="tab" data-o-tab="expedition">查看外拓結算</button>':'';
-    const message=status(v)+(hint?' · 收到一段來源未明的模糊呼號':ready?' · 電台有待回覆訊息':'');
+    const radio=ready?'<button class="outpost-alert-link" type="button" data-o-action="tab" data-o-tab="radio">電台回覆</button>':'';
+    const result=report?'<button class="outpost-alert-link" type="button" data-o-action="tab" data-o-tab="expedition">外拓結算</button>':'';
+    const message=status(v)+(hint?' · 來源未明的呼號':ready?' · 電台待回覆':'');
     return '<div class="outpost-alert" role="region" aria-label="警戒與通知">'+
       '<span class="outpost-warning-symbol" aria-hidden="true">◆</span>'+
       '<span class="outpost-threat" data-o-threat aria-live="off">'+escapeHtml(message)+'</span>'+radio+result+'</div>';
   }
-  function currentNotice(v){return status(v)+(v.hero.phase==='hint'?' · 收到一段來源未明的模糊呼號':
-    v.hero.phase==='ready'?' · 電台有待回覆訊息':'');}
+  function currentNotice(v){return status(v)+(v.hero.phase==='hint'?' · 來源未明的呼號':
+    v.hero.phase==='ready'?' · 電台待回覆':'');}
   function shell(v){const b=v.base;return '<div class="outpost-shell">'+
     '<header class="outpost-hud"><div class="outpost-hud-head"><div><span class="outpost-eyebrow">持續基地 · 只存在本機</span><h1>墜星前哨</h1></div>'+
       '<button class="btn small" type="button" data-o-action="pause" aria-label="'+(v.manual_paused?'恢復':'暫停')+'遊戲時間">'+(v.manual_paused?'繼續':'暫停')+'</button></div>'+
@@ -70,20 +70,29 @@
     alertHtml(v)+
     '<div id="outpost-stage" class="outpost-stage" tabindex="-1">'+error()+page(v)+'</div>'+
     '<nav class="outpost-nav" aria-label="長期前哨主要頁面">'+['base','expedition','radio'].map((id,i)=>
-      '<button class="outpost-nav-btn'+(state.tab===id?' active':'')+'" data-o-action="tab" data-o-tab="'+id+'" type="button"'+(state.tab===id?' aria-current="page"':'')+'><span>'+
+      '<button class="outpost-nav-btn'+(state.tab===id?' active':'')+'" data-o-action="tab" data-o-tab="'+id+'" type="button"'+(state.tab===id?' aria-current="page"':'')+' aria-label="'+(id==='radio'?(v.hero.phase==='ready'?'電台有待回覆':v.hero.phase==='hint'?'電台有來源未明的呼號':'電台'):id==='expedition'&&v.last_report?'外拓有結算紀錄':id==='base'?'基地':'外拓')+'"><span>'+
       ['基地','外拓','電台'][i]+'</span>'+(id==='radio'?'<span class="outpost-nav-badge" data-o-radio-badge hidden aria-hidden="true">●</span>':id==='expedition'?'<span class="outpost-nav-badge" data-o-result-badge hidden aria-hidden="true">●</span>':'')+'</button>').join('')+'</nav></div>';}
   function facility(label,desc,owned,action,cost,enabled){return '<div class="outpost-facility"><div><h3>'+label+'</h3><p>'+desc+'</p></div>'+
     (owned?'<span class="outpost-owned">已完成</span>':'<button class="btn small" type="button" data-o-action="'+action+'"'+(enabled?'':' disabled')+'>合金 '+cost+' · '+(action.startsWith('build')?'建造':'升級')+'</button>')+'</div>';}
   function assignRow(label,facility,count,enabled){return '<div class="outpost-assign-row"><span>'+label+'：<strong>'+count+'</strong> 人</span><div class="outpost-action-pair">'+
     '<button class="btn small" data-o-action="assign" data-o-facility="'+facility+'" data-o-count="'+(count-1)+'" type="button"'+(count===0?' disabled':'')+' aria-label="'+label+'調回一人">−</button>'+
     '<button class="btn small" data-o-action="assign" data-o-facility="'+facility+'" data-o-count="'+(count+1)+'" type="button"'+(enabled?'':' disabled')+' aria-label="'+label+'增派一人">＋</button></div></div>';}
-  function basePage(v){const b=v.base;const pop=v.population;return '<section class="outpost-panel"><h2>長期基地</h2><p>這裡不是15分鐘一次重置的臨時營地。建築、訓練、船員與永久損失都會留下。</p>'+ 
-    '<div class="outpost-crew"><p>待命 '+b.standby+' · 巡衛 '+b.patrols+' · 守陣 '+b.wards+' · 永久傷亡 '+b.losses+'</p><p>侵略失守 '+b.raids_lost+' · 已外出 '+(v.expedition?v.expedition.crew:0)+' · 全體 '+pop+'/6</p></div'+ 
+  function heroRecord(h){if(!h||h.phase!=='resolved'||!h.choice)return '';
+    const label=h.choice==='HERO-SIGNAL-TRACE'?'TRACE｜記錄並追蹤訊號（免費）':
+      h.choice==='HERO-SIGNAL-SHELTER'?'SHELTER｜優先守護訊號來源（免費）':'未記錄';
+    return '<aside class="outpost-hero-record" aria-label="電台已回覆紀錄"><h3>電台已回覆</h3>'+
+      '<p>選擇：'+escapeHtml(label)+'</p><p>'+escapeHtml(h.text||'未記錄')+'</p>'+
+      '<p class="outpost-muted">這是通訊紀錄，沒有新增船員、永久資源加成或已驗證解鎖的能力。</p></aside>';
+  }
+  function basePage(v){const b=v.base;const pop=v.population;return '<section class="outpost-panel"><h2>長期基地</h2>'+
+    '<p class="outpost-first-step">可先在回收廠派工；合金足夠時也可建補給棚。<button class="outpost-jump" type="button" data-o-action="jump-labor" aria-controls="outpost-labor">跳至派工與防守</button></p>'+
+    '<p class="outpost-muted">設施、物資與人口缺口跨外拓保存；切分頁或離開不等於暫停，未暫停返回可能補算。</p>'+
+    '<div class="outpost-crew" aria-label="基地即時人口與編制"><p>目前人口 <strong data-o-live-pop>'+pop+'</strong>/6 · 累計永久傷亡 <strong data-o-live-losses>'+b.losses+'</strong> · 已外出 <strong data-o-live-away>'+(v.expedition?v.expedition.crew:0)+'</strong></p><p>待命 '+b.standby+' · 巡衛 '+b.patrols+' · 守陣 '+b.wards+' · 侵略失守 '+b.raids_lost+'</p></div>'+heroRecord(v.hero)+
     '<h3>建築與升級</h3>'+facility('補給棚','產出口糧；工人每30秒每人＋2',b.supply_built,'build-supply',5,b.alloy>=5)+
     facility('整備艙','訓練巡衛或守陣',b.armory_built,'build-armory',8,b.alloy>=8)+
     facility('回收廠 · 深拆裝置','有值守船員時提升合金產出',b.recycle_upgraded,'upgrade-recycle',6,b.alloy>=6)+
     facility('補給棚 · 密植槽','已建補給棚且有人值守時增加口糧',b.supply_upgraded,'upgrade-supply',4,b.supply_built&&b.alloy>=4)+
-    '<h3>派工與防守</h3>'+assignRow('回收廠','recycle',b.recycle_workers,b.standby>0&&b.recycle_workers<2&&b.recycle_workers+b.supply_workers<Math.min(5,pop-1))+
+    '<h3 id="outpost-labor" class="outpost-labor-anchor" tabindex="-1">派工與防守</h3>'+assignRow('回收廠','recycle',b.recycle_workers,b.standby>0&&b.recycle_workers<2&&b.recycle_workers+b.supply_workers<Math.min(5,pop-1))+
     assignRow('補給棚','supply',b.supply_workers,b.supply_built&&b.standby>0&&b.supply_workers<2&&b.recycle_workers+b.supply_workers<Math.min(5,pop-1))+
     assignRow('指揮艙值守','duty',b.duty_workers,b.standby>0&&b.duty_workers<1)+
     '<p class="outpost-muted">每30秒按既有產出規則結算；深拆／密植加成需有人值守。外拓期間留守派工仍會產出。</p>'+ 
@@ -94,22 +103,40 @@
       '<button class="btn small" data-o-action="recall-ward" type="button"'+(b.recalling||!b.wards?' disabled':'')+'>守陣遣返1人</button></div>':'' )+
     (b.training?'<p class="outpost-muted">訓練中，完成時間 '+fmt(Math.max(0,b.training.completes_at-v.time))+'</p>':'')+
     (b.recalling?'<p class="outpost-muted">遣返中，尚餘 '+fmt(Math.max(0,b.recalling.completes_at-v.time))+'</p>':'')+
-    '<details class="outpost-detail"><summary>最近侵略與記錄</summary>'+lastRaid(v)+logs(v)+'</details></section>'+report(v);}
-  function lastRaid(v){const r=v.last_raid;if(!r)return '<p>尚未有已結算侵略。</p>';
-    return '<p>侵略 '+escapeHtml(r.id)+' · '+(r.outcome==='attack_win'?'防守失敗':r.outcome==='draw'?'打和':'防守成功')+
-      ' · 永久死亡 '+r.loss_crew+'、失去合金 '+r.loss_alloy+'、口糧 '+r.loss_rations+'</p>';}
+    '<details class="outpost-detail"><summary>最近一次侵略與記錄</summary>'+lastRaid(v)+logs(v)+'</details></section>'+report(v);}
+  function recordedNumber(obj,key){return obj&&Object.prototype.hasOwnProperty.call(obj,key)&&
+    typeof obj[key]==='number'&&Number.isFinite(obj[key])?String(obj[key]):'未記錄';}
+  function raidOutcome(raid){return !raid||!Object.prototype.hasOwnProperty.call(raid,'outcome')?'未記錄':
+    raid.outcome==='attack_win'?'防守失敗':raid.outcome==='draw'?'打和':
+    raid.outcome==='defense_win'?'防守成功':'未記錄';}
+  function lastRaid(v){const r=v.last_raid;if(!r)return '<p>最近一次侵略：尚無已結算紀錄。</p>';
+    const where=r.context==='expedition'?'外拓':r.context==='base'?'留守':'未記錄';
+    return '<p>最近一次侵略（'+where+'）：'+raidOutcome(r)+' · 人口傷亡 '+recordedNumber(r,'loss_crew')+
+      ' · 失去合金 '+recordedNumber(r,'loss_alloy')+' · 失去口糧 '+recordedNumber(r,'loss_rations')+'</p>';}
   function logs(v){return '<ul class="outpost-events">'+v.events.slice(-10).reverse().map(e=>'<li>'+fmt(e.at)+'　'+escapeHtml(e.text)+'</li>').join('')+'</ul>';}
   function select(label,id,min,max,initial){let a='';for(let n=min;n<=max;n++)a+='<option value="'+n+'"'+(n===initial?' selected':'')+'>'+n+'</option>';
     return '<label>'+label+'<select id="'+id+'" aria-label="'+label+'">'+a+'</select></label>';}
   function report(v){const r=v.last_report;if(!r)return '';
-    return '<section class="outpost-panel outpost-report" id="outpost-result"><h2>上一趟外拓結算</h2><p>'+escapeHtml(r.reason)+'</p><p>返回船員 '+r.returning_crew+' · 口糧 '+r.rations+' · 合金 '+r.alloy+'（外拓採集 '+r.alloy_scavenged+'）</p><p>永久人口現在 '+r.population+'/6；本趟侵略傷亡 '+r.raid.loss_crew+' 人。</p></section>';}
+    const raid=r.raid;
+    const cell=(name,val)=>'<div><dt>'+name+'</dt><dd>'+escapeHtml(val)+'</dd></div>';
+    return '<section class="outpost-panel outpost-report" id="outpost-result" aria-labelledby="outpost-result-title">'+
+      '<h2 id="outpost-result-title">上一趟外拓結算</h2><p>'+escapeHtml(r.reason||'未記錄')+'</p>'+
+      '<h3>本趟侵略帳</h3><dl class="outpost-report-grid">'+
+      cell('本趟侵略結果',raidOutcome(raid))+cell('本趟人口傷亡',recordedNumber(raid,'loss_crew'))+
+      cell('本趟失去合金',recordedNumber(raid,'loss_alloy'))+cell('本趟失去口糧',recordedNumber(raid,'loss_rations'))+'</dl>'+
+      '<h3>本趟實際返還</h3><dl class="outpost-report-grid">'+
+      cell('返還船員',recordedNumber(r,'returning_crew'))+cell('返還口糧',recordedNumber(r,'rations'))+
+      cell('返還合金',recordedNumber(r,'alloy'))+cell('在外採集',recordedNumber(r,'alloy_scavenged'))+
+      cell('在外消耗口糧',recordedNumber(r,'rations_consumed'))+'</dl>'+
+      '<p class="outpost-muted">以上只屬本趟結算；目前人口與累計傷亡請看基地即時帳。</p></section>';}
   function expeditionPage(v){const b=v.base,e=v.expedition;let content='<section class="outpost-panel"><h2>15分鐘外拓</h2>';
     if(e){content+='<p data-o-expedition-progress>正在外拓 · 航程 '+fmt(v.time-e.started_at)+' / 15:00，15分鐘到期自動結算。</p>'+ 
       '<div class="outpost-stats in-run">'+stat('外拓船員',e.crew,'out-crew')+stat('口糧',e.rations,'out-rations')+stat('合金',e.alloy,'out-alloy')+stat('在外採集',e.alloy_scavenged,'out-scavenged')+'</div>'+ 
       '<p>侵略：'+(e.raid.stage==='resolved'?'已結算':e.raid.stage==='battle'?'正在交戰':'尚未發生')+'；出發前已固定遭遇時刻，不會中途重抽。</p>'+ 
-      (e.return_requested?'<p class="outpost-muted">返航已安排，遭遇結算後會自動返回。</p>':
-        '<button class="btn secondary" type="button" data-o-action="return">要求提前返航</button>')+
-      '<p class="outpost-muted">為確保每趟外拓遭遇一次侵略，提前返航命令會在原定侵略結算後執行；不改動已排定時間。</p>';
+      '<div class="outpost-return-control" aria-label="提前返航控制">'+
+      (e.return_requested?'<p class="outpost-return-wait" role="status">返航請求已送出；本趟已排定侵略結算後會自動返回。無須再按。</p>':
+        '<p class="outpost-return-rule">這是返航請求；必須等待本趟已排定侵略結算後才會返回，不會立即返航。</p>'+
+        '<button class="btn secondary" type="button" data-o-action="return">要求提前返航</button>')+'</div>';
     }else{const can=b.standby>=2&&v.population>=4&&b.rations>=8;
       content+='<p>只由待命人員編組，基地最少留守2人；每30秒在外人手至少2人可取得1合金，每90秒消耗1口糧。</p>'+ 
         '<div class="outpost-depart-form" role="group" aria-label="外拓編制">'+select('帶出船員（2–4，留守≥2）','outpost-crew',2,4,2)+
@@ -125,7 +152,7 @@
     if(h.phase==='hint')inner='<p>'+escapeHtml(h.hint)+'</p><p class="outpost-muted">訊號仍然模糊，暫時無法回覆。</p>';
     if(h.phase==='ready')inner='<h3>'+escapeHtml(h.title)+'</h3><p>'+escapeHtml(h.introduction)+'</p>'+h.options.map(o=>
       '<button class="btn secondary" type="button" data-o-action="hero-choice" data-o-choice="'+o.id+'">'+escapeHtml(o.label)+'</button>').join('');
-    if(h.phase==='resolved')inner='<h3>通訊已回覆</h3><p>'+escapeHtml(h.text)+'</p><p class="outpost-muted">此事件一次完成，沒有增派船員或產生永久資源加成。</p>';
+    if(h.phase==='resolved')inner=heroRecord(h);
     return '<section class="outpost-panel"><h2>電台</h2>'+inner+'</section>';}
   function page(v){return state.tab==='expedition'?expeditionPage(v):state.tab==='radio'?radioPage(v):basePage(v);}
   function signature(v){const e=v.expedition,b=v.base;return JSON.stringify([state.tab,b.rations,b.alloy,b.standby,
@@ -166,7 +193,8 @@
     const b=state.app.querySelector('[data-o-runclock]');if(b)b.textContent=v.expedition?'本趟餘 '+fmt(900-(v.time-v.expedition.started_at)):'長期基地';
     const w=state.app.querySelector('[data-o-threat]');const message=currentNotice(v);
     if(w&&w.textContent!==message)w.textContent=message;
-    const statValues={'rations':v.base.rations,'alloy':v.base.alloy,'population':v.population+'/6','base-population':v.base_population};
+    const statValues={'rations':v.base.rations,'alloy':v.base.alloy,'population':v.population+'/6','base-population':v.base_population,
+      'live-pop':v.population,'live-losses':v.base.losses,'live-away':v.expedition?v.expedition.crew:0};
     if(v.expedition){const e=v.expedition;
       statValues['out-crew']=e.crew;statValues['out-rations']=e.rations;
       statValues['out-alloy']=e.alloy;statValues['out-scavenged']=e.alloy_scavenged;
@@ -193,9 +221,20 @@
     const radio=state.app.querySelector('[data-o-radio-badge]');if(radio){
       const attention=v.hero.phase==='hint'||v.hero.phase==='ready';
       if(attention)radio.removeAttribute('hidden');else radio.setAttribute('hidden','');
+      const badgeText=v.hero.phase==='ready'?'● 待回覆':v.hero.phase==='hint'?'● 呼號':'●';
+      if(radio.textContent!==badgeText)radio.textContent=badgeText;
+    }
+    const radioTab=state.app.querySelector('[data-o-tab="radio"].outpost-nav-btn');if(radioTab){
+      const label=v.hero.phase==='ready'?'電台有待回覆':v.hero.phase==='hint'?'電台有來源未明的呼號':'電台';
+      if(radioTab.getAttribute('aria-label')!==label)radioTab.setAttribute('aria-label',label);
     }
     const result=state.app.querySelector('[data-o-result-badge]');if(result){
       if(v.last_report)result.removeAttribute('hidden');else result.setAttribute('hidden','');
+      if(result.textContent!==(v.last_report?'● 結算':'●'))result.textContent=v.last_report?'● 結算':'●';
+    }
+    const expeditionTab=state.app.querySelector('[data-o-tab="expedition"].outpost-nav-btn');if(expeditionTab){
+      const label=v.last_report?'外拓有結算紀錄':'外拓';
+      if(expeditionTab.getAttribute('aria-label')!==label)expeditionTab.setAttribute('aria-label',label);
     }
   }
   function renderGame(force){if(!state.controller||!state.controller.state)return;
@@ -244,6 +283,9 @@
       else{state.error=r&&r.error?r.error:'未找到可用存檔。';renderEntry();}return;}
     if(state.screen!=='game'||!state.controller)return;
     if(action==='tab'){captureDepartDraft();state.tab=btn.dataset.oTab;state.signature='';renderGame(true);const stage=state.app.querySelector('#outpost-stage');if(stage)stage.scrollTop=0;return;}
+    if(action==='jump-labor'){const anchor=state.app.querySelector('#outpost-labor');
+      if(anchor){if(typeof anchor.scrollIntoView==='function')anchor.scrollIntoView({block:'start',behavior:'auto'});
+        if(typeof anchor.focus==='function')anchor.focus();}return;}
     if(action==='pause'){respond(state.controller.setPaused(!state.controller.state.manual_paused));return;}
     const payload={command_id:'ui-'+token()};
     if(action==='assign'){payload.type='assign';payload.facility=btn.dataset.oFacility;payload.count=Number(btn.dataset.oCount);}
