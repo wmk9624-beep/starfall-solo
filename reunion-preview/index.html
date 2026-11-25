@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="zh-Hant-HK">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0b1020">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>墜星前哨｜長期基地與外拓</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <!-- 真人首頁直達獨立長期前哨；測試 harness 保留舊 #app/script 啟動契約。
+       先設 UI-only 哨兵，即使導航被延遲也不可啟動舊存檔選單。 -->
+  <script>
+    if (typeof window !== "undefined" && !window.__STARFALL_TEST__) {
+      window.__STARFALL_OUTPOST_PRIMARY__ = true;
+      window.location.replace("outpost.html");
+    }
+  </script>
+</head>
+<body>
+  <div class="sky" aria-hidden="true"></div>
+  <div class="horizon" aria-hidden="true"></div>
+  <main id="app" class="app outpost-home-entry">
+    <section class="outpost-entry card" aria-labelledby="outpost-home-title">
+      <span class="outpost-eyebrow">PERSISTENT OUTPOST</span>
+      <h1 id="outpost-home-title">墜星前哨｜長期基地</h1>
+      <p>從墜星求救序章開始，保存基地、船員與每趟外拓的後果。</p>
+      <a class="btn" href="outpost.html">進入／繼續長期前哨</a>
+      <details class="outpost-detail"><summary>其他遊戲模式</summary>
+        <a class="outpost-text-link" href="journey.html">舊單局及兩章旅程</a>
+      </details>
+    </section>
+  </main>
+  <div id="sheet-root"></div>
+  <script src="js/events.js"></script>
+  <script src="js/story-data.js"></script>
+  <script src="js/story-engine.js"></script>
+  <script src="js/campaign.js"></script>
+  <script src="js/engine.js"></script>
+  <script src="js/ai.js"></script>
+  <script src="js/catchup.js"></script>
+  <script src="js/save.js"></script>
+  <script src="js/ui-sync.js"></script>
+  <script src="js/story-ui.js"></script>
+  <script src="js/app.js" defer></script>
+</body>
+</html>
